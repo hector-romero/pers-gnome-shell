@@ -1,0 +1,12 @@
+.sass-cache*
+.ls_archivos_coffee*
+.ls_archivos_sass*
+.ref_coffee*
+.ref_sass*
+.idea/*
+.idea/workspace.xml
+html/*
+js/AddForBrowser/*
+*.iml
+
+

@@ -1,0 +1,10 @@
+{
+ "extension-id": "alternative-status-menu",
+ "uuid": "alternative-status-menu@gnome-shell-extensions.gcampax.github.com",
+ "settings-schema": "org.gnome.shell.extensions.alternative-status-menu",
+ "gettext-domain": "gnome-shell-extensions",
+ "name": "Alternative Status Menu",
+ "description": "Replaces GNOME Shell Status Menu with one showing Suspend/Hibernate and Power Off as separate items",
+ "shell-version": [ "3.4" ],
+ "url": "http://git.gnome.org/gnome-shell-extensions"
+}

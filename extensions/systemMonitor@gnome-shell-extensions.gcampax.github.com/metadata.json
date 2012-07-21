@@ -1,0 +1,11 @@
+{
+    "shell-version": ["3.4" ],
+    "uuid": "systemMonitor@gnome-shell-extensions.gcampax.github.com",
+    "extension-id": "systemMonitor",
+    "settings-schema": "org.gnome.shell.extensions.systemMonitor",
+    "gettext-domain": "gnome-shell-extensions",
+    "original-author": "zaspire@rambler.ru",
+    "name": "SystemMonitor",
+    "description": "System Monitor",
+    "url": "http://git.gnome.org/gnome-shell-extensions"
+}
