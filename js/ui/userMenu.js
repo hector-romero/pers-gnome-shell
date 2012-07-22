@@ -460,7 +460,7 @@ const UserMenuButton = new Lang.Class({
         this._iconBox = new St.Bin();
         box.add(this._iconBox, { y_align: St.Align.MIDDLE, y_fill: false });
 
-        let textureCache = St.TextureCache.get_default();
+//        let textureCache = St.TextureCache.get_default();
 //        this._offlineIcon = new St.Icon({ icon_name: 'user-offline',
 //                                          style_class: 'popup-menu-icon' });
 //        this._availableIcon = new St.Icon({ icon_name: 'user-available',
@@ -473,33 +473,24 @@ const UserMenuButton = new Lang.Class({
 //                                       style_class: 'popup-menu-icon' });
 //        this._idleIcon = new St.Icon({ icon_name: 'user-idle',
 //                                       style_class: 'popup-menu-icon' });
-        this._offlineIcon = new St.Icon({ icon_name: 'user-available',
-                                          style_class: 'popup-menu-icon' });
-        this._availableIcon = new St.Icon({ icon_name: 'user-available',
-                                            style_class: 'popup-menu-icon' });
-        this._busyIcon = new St.Icon({ icon_name: 'user-busy',
-                                       style_class: 'popup-menu-icon' });
-        this._invisibleIcon = new St.Icon({ icon_name: 'user-invisible',
-                                            style_class: 'popup-menu-icon' });
-        this._awayIcon = new St.Icon({ icon_name: 'user-away',
-                                       style_class: 'popup-menu-icon' });
-        this._idleIcon = new St.Icon({ icon_name: 'user-idle',
-                                       style_class: 'popup-menu-icon' });
 
-        this._accountMgr.connect('most-available-presence-changed',
-                                  Lang.bind(this, this._updatePresenceIcon));
-        this._accountMgr.prepare_async(null, Lang.bind(this,
-            function(mgr) {
-                let [presence, s, msg] = mgr.get_most_available_presence();
-                this._updatePresenceIcon(mgr, presence, s, msg);
-            }));
+        var icon = new St.Icon({ icon_name: 'system-shutdown',
+            style_class: 'popup-menu-icon' });
+        this._iconBox.child = icon;
+//        this._accountMgr.connect('most-available-presence-changed',
+//                                  Lang.bind(this, this._updatePresenceIcon));
+//        this._accountMgr.prepare_async(null, Lang.bind(this,
+//            function(mgr) {
+//                let [presence, s, msg] = mgr.get_most_available_presence();
+//                this._updatePresenceIcon(mgr, presence, s, msg);
+//            }));
 
-        this._name = new St.Label();
-        this.actor.label_actor = this._name;
-        box.add(this._name, { y_align: St.Align.MIDDLE, y_fill: false });
-        this._userLoadedId = this._user.connect('notify::is-loaded', Lang.bind(this, this._updateUserName));
-        this._userChangedId = this._user.connect('changed', Lang.bind(this, this._updateUserName));
-        this._updateUserName();
+//        this._name = new St.Label();
+//        this.actor.label_actor = this._name;
+//        box.add(this._name, { y_align: St.Align.MIDDLE, y_fill: false });
+//        this._userLoadedId = this._user.connect('notify::is-loaded', Lang.bind(this, this._updateUserName));
+//        this._userChangedId = this._user.connect('changed', Lang.bind(this, this._updateUserName));
+//        this._updateUserName();
 
         this._createSubMenu();
 
@@ -547,12 +538,12 @@ const UserMenuButton = new Lang.Class({
         this._user.disconnect(this._userChangedId);
     },
 
-    _updateUserName: function() {
-        if (this._user.is_loaded)
-            this._name.set_text(this._user.get_real_name());
-        else
-            this._name.set_text("");
-    },
+//    _updateUserName: function() {
+//        if (this._user.is_loaded)
+//            this._name.set_text(this._user.get_real_name());
+//        else
+//            this._name.set_text("");
+//    },
 
     _updateSwitchUser: function() {
         let allowSwitch = !this._lockdownSettings.get_boolean(DISABLE_USER_SWITCH_KEY);
@@ -617,20 +608,20 @@ const UserMenuButton = new Lang.Class({
         this._notificationsSwitch.setToggleState(active);
     },
 
-    _updatePresenceIcon: function(accountMgr, presence, status, message) {
-        if (presence == Tp.ConnectionPresenceType.AVAILABLE)
-            this._iconBox.child = this._availableIcon;
-        else if (presence == Tp.ConnectionPresenceType.BUSY)
-            this._iconBox.child = this._busyIcon;
-        else if (presence == Tp.ConnectionPresenceType.HIDDEN)
-            this._iconBox.child = this._invisibleIcon;
-        else if (presence == Tp.ConnectionPresenceType.AWAY)
-            this._iconBox.child = this._awayIcon;
-        else if (presence == Tp.ConnectionPresenceType.EXTENDED_AWAY)
-            this._iconBox.child = this._idleIcon;
-        else
-            this._iconBox.child = this._offlineIcon;
-    },
+//    _updatePresenceIcon: function(accountMgr, presence, status, message) {
+//        if (presence == Tp.ConnectionPresenceType.AVAILABLE)
+//            this._iconBox.child = this._availableIcon;
+//        else if (presence == Tp.ConnectionPresenceType.BUSY)
+//            this._iconBox.child = this._busyIcon;
+//        else if (presence == Tp.ConnectionPresenceType.HIDDEN)
+//            this._iconBox.child = this._invisibleIcon;
+//        else if (presence == Tp.ConnectionPresenceType.AWAY)
+//            this._iconBox.child = this._awayIcon;
+//        else if (presence == Tp.ConnectionPresenceType.EXTENDED_AWAY)
+//            this._iconBox.child = this._idleIcon;
+//        else
+//            this._iconBox.child = this._offlineIcon;
+//    },
 
     _createSubMenu: function() {
         let item;

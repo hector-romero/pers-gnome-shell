@@ -34,7 +34,7 @@ const Scripting = imports.ui.scripting;
 const ShellDBus = imports.ui.shellDBus;
 //const TelepathyClient = imports.ui.telepathyClient;
 const WindowManager = imports.ui.windowManager;
-const Magnifier = imports.ui.magnifier;
+//const Magnifier = imports.ui.magnifier;
 const XdndHandler = imports.ui.xdndHandler;
 const StatusIconDispatcher = imports.ui.statusIconDispatcher;
 const Util = imports.misc.util;
@@ -62,7 +62,7 @@ let shellDBusService = null;
 let modalCount = 0;
 let modalActorFocusStack = [];
 let uiGroup = null;
-let magnifier = null;
+//let magnifier = null;
 let xdndHandler = null;
 let statusIconDispatcher = null;
 let keyboard = null;
@@ -217,7 +217,7 @@ function start() {
     ctrlAltTabManager = new CtrlAltTab.CtrlAltTabManager();
     // This overview object is just a stub for non-user sessions
     overview = new Overview.Overview({ isDummy: global.session_type != Shell.SessionType.USER });
-    magnifier = new Magnifier.Magnifier();
+//    magnifier = new Magnifier.Magnifier();
     statusIconDispatcher = new StatusIconDispatcher.StatusIconDispatcher();
     panel = new Panel.Panel();
     wm = new WindowManager.WindowManager();
