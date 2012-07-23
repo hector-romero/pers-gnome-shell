@@ -582,25 +582,25 @@ const UserMenuButton = new Lang.Class({
     },
 
     _updateSuspendOrPowerOff: function() {
-        this._haveSuspend = this._upClient.get_can_suspend();
-
-        if (!this._suspendOrPowerOffItem)
-            return;
-
-        if (!this._haveShutdown && !this._haveSuspend)
-            this._suspendOrPowerOffItem.actor.hide();
-        else
-            this._suspendOrPowerOffItem.actor.show();
-
-        // If we can't suspend show Power Off... instead
-        // and disable the alt key
-        if (!this._haveSuspend) {
-            this._suspendOrPowerOffItem.updateText(_("Power Off..."), null);
-        } else if (!this._haveShutdown) {
-            this._suspendOrPowerOffItem.updateText(_("Suspend"), null);
-        } else {
-            this._suspendOrPowerOffItem.updateText(_("Suspend"), _("Power Off..."));
-        }
+//        this._haveSuspend = this._upClient.get_can_suspend();
+//
+//        if (!this._suspendOrPowerOffItem)
+//            return;
+//
+//        if (!this._haveShutdown && !this._haveSuspend)
+//            this._suspendOrPowerOffItem.actor.hide();
+//        else
+//            this._suspendOrPowerOffItem.actor.show();
+//
+//        // If we can't suspend show Power Off... instead
+//        // and disable the alt key
+//        if (!this._haveSuspend) {
+//            this._suspendOrPowerOffItem.updateText(_("Power Off..."), null);
+//        } else if (!this._haveShutdown) {
+//            this._suspendOrPowerOffItem.updateText(_("Suspend"), null);
+//        } else {
+//            this._suspendOrPowerOffItem.updateText(_("Suspend"), _("Power Off..."));
+//        }
     },
 
     _updateSwitch: function(status) {
@@ -664,12 +664,24 @@ const UserMenuButton = new Lang.Class({
         item = new PopupMenu.PopupSeparatorMenuItem();
         this.menu.addMenuItem(item);
 
-        item = new PopupMenu.PopupAlternatingMenuItem(_("Suspend"),
-                                                      _("Power Off..."));
+
+        if (this._upClient.get_can_suspend()){
+            item = new PopupMenu.PopupMenuItem(_("Suspend"));
+            item.connect('activate', Lang.bind(this, this._onSuspendActivate));
+            this.menu.addMenuItem(item);
+        }
+        item = new PopupMenu.PopupMenuItem(_("Power Off..."));
+        item.connect('activate', Lang.bind(this, this._onPowerOffActivate));
         this.menu.addMenuItem(item);
-        this._suspendOrPowerOffItem = item;
-        item.connect('activate', Lang.bind(this, this._onSuspendOrPowerOffActivate));
-        this._updateSuspendOrPowerOff();
+
+//
+//        item = new PopupMenu.PopupAlternatingMenuItem(_("Suspend"),
+//                                                      _("Power Off..."));
+//
+//        this.menu.addMenuItem(item);
+//        this._suspendOrPowerOffItem = item;
+//        item.connect('activate', Lang.bind(this, this._onSuspendOrPowerOffActivate));
+//        this._updateSuspendOrPowerOff();
     },
 
     _updatePresenceStatus: function(item, event) {
@@ -722,17 +734,29 @@ const UserMenuButton = new Lang.Class({
         this._session.LogoutRemote(0);
     },
 
-    _onSuspendOrPowerOffActivate: function() {
-        Main.overview.hide();
+//    _onSuspendOrPowerOffActivate: function() {
+//        Main.overview.hide();
+//
+//        if (this._haveSuspend &&
+//            this._suspendOrPowerOffItem.state == PopupMenu.PopupAlternatingMenuItemState.DEFAULT) {
+//            // Ensure we only suspend after locking the screen
+//            this._screenSaverProxy.LockRemote(Lang.bind(this, function() {
+//                this._upClient.suspend_sync(null);
+//            }));
+//        } else {
+//            this._session.ShutdownRemote();
+//        }
+//    },
 
-        if (this._haveSuspend &&
-            this._suspendOrPowerOffItem.state == PopupMenu.PopupAlternatingMenuItemState.DEFAULT) {
-            // Ensure we only suspend after locking the screen
-            this._screenSaverProxy.LockRemote(Lang.bind(this, function() {
-                this._upClient.suspend_sync(null);
-            }));
-        } else {
-            this._session.ShutdownRemote();
-        }
+    _onPowerOffActivate: function(){
+        Main.overview.hide();
+        this._session.ShutdownRemote();
+    },
+
+    _onSuspendActivate: function(){
+        if( ! this._upClient.get_can_suspend()) return;
+        this._screenSaverProxy.LockRemote(Lang.bind(this, function() {
+            this._upClient.suspend_sync(null);
+        }));
     }
 });
