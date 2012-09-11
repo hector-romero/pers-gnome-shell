@@ -87,7 +87,6 @@ function _fixMarkup(text, allowMarkup) {
 const URLHighlighter = new Lang.Class({
     Name: 'URLHighlighter',
 
-
     _init: function(text, lineWrap, allowMarkup) {
         if (!text)
             text = '';
@@ -165,7 +164,6 @@ const URLHighlighter = new Lang.Class({
                 global.unset_cursor();
             }
         }));
-
     },
 
     setMarkup: function(text, allowMarkup) {
