@@ -1,0 +1,17 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Yet Another Inhibit Suspend extension for GNOME shell\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2012-03-11 22:43+0200\n"
+"PO-Revision-Date: 2012-03-11 22:43+0200\n"
+"Last-Translator: Lavi .A <laviams@gmail.com>\n"
+"Language-Team: \n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: /home/lavi/Development/git/gnome-shell-extension-inhibit-suspend/inhibit-suspend@lavi.a/extension.js:53
+msgid "Inhibit Suspend"
+msgstr ""
+

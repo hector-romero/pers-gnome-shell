@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="gnome-shell-extensions">
+  <schema path="/org/gnome/shell/extensions/window-options/" id="org.gnome.shell.extensions.window-options">
+    <key type="i" name="length-cutoff">
+        <default>4</default>
+        <summary>Put window options in a submenu</summary>
+        <description>If this many items or more are already in the appMenu, put the window options in a submenu. Set to -1 to ignore.</description>
+    </key>
+    <key type="as" name="order">
+        <default>['minimize', 'restore', 'maximize', 'separator', 'move', 'resize', 'separator', 'always-on-top', 'always-on-visible-workspace', 'move-to-workspace', 'separator', 'close-window']</default>
+        <summary>Order of items in the menu.</summary>
+        <description>Order of window options. You can put in: 'minimize', 'restore', 'maximize', 'move', 'resize', 'always-on-top', 'always-on-visible-workspace', 'move-to-workspace', 'move-to-next-workspace', 'move-to-previous-workspace', 'close-window', and 'separator' (for a separator).</description>
+    </key>
+  </schema>
+</schemalist>

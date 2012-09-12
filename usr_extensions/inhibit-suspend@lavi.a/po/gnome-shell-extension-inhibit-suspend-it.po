@@ -1,0 +1,22 @@
+# Italian translation for inhibit-suspend
+# Copyright (c) 2012 Rosetta Contributors and Canonical Ltd 2012
+# This file is distributed under the same license as the inhibit-suspend package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2012.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: inhibit-suspend\n"
+"Report-Msgid-Bugs-To: FULL NAME <EMAIL@ADDRESS>\n"
+"POT-Creation-Date: 2012-03-11 22:43+0200\n"
+"PO-Revision-Date: 2012-04-25 12:48+0000\n"
+"Last-Translator: Lavi .A <Unknown>\n"
+"Language-Team: Italian <it@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Launchpad-Export-Date: 2012-04-25 13:12+0000\n"
+"X-Generator: Launchpad (build 15139)\n"
+
+#: /home/lavi/Development/git/gnome-shell-extension-inhibit-suspend/inhibit-suspend@lavi.a/extension.js:53
+msgid "Inhibit Suspend"
+msgstr "Sospendi Inibizione"
