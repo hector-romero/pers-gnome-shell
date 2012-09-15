@@ -27,17 +27,24 @@ const DND = imports.ui.dnd;
 const Layout = imports.ui.layout;
 const Main = imports.ui.main;
 const PanelMenu = imports.ui.panelMenu;
-
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
 
 const Gettext = imports.gettext.domain('nls1729-extensions');
 const _ = Gettext.gettext;
+const _N = function(x) { return x; }
 
 const ExtensionUtils = imports.misc.extensionUtils;
 const Me = ExtensionUtils.getCurrentExtension();
 const Convenience = Me.imports.convenience;
 const Keys = Me.imports.keys;
+const Notify = Me.imports.notify;
+const Readme = Me.imports.readme;
+
+const ActivitiesButtonName = 'panelActivities';
+const ActivitiesIconButtonName = 'panelActivitiesIconButton';
+const ButtonRemoved = 'removed';
+const CONFLICT = 'Conflict Detected';
 
 const HotterCorner = new Lang.Class({
     Name: 'ActivitiesConfigurator.HotterCorner',
@@ -83,7 +90,6 @@ const ActivitiesIconButton = new Lang.Class({
 
     _init: function() {
         this.parent(0.0);
-        this._position = 0;
         this.actor.accessible_role = Atk.Role.TOGGLE_BUTTON;
         this._signals = [];
         this._container = new Shell.GenericContainer();
@@ -240,12 +246,17 @@ const Configurator = new Lang.Class({
     Name: 'ActivitiesConfigurator.Configurator',
 
     _init : function() {
+        this._enabled = false;
+        this._noConflicts = false;
         this._settings = Convenience.getSettings();
         this._savedText = Main.panel._activitiesButton._label.get_text();
         this._settings.set_string(Keys.ORI_TXT, this._savedText);
         this._settingsSignals = [];
         this._iconPath = '';
         this._originalOnCornerEntered = null;
+        this._name = ActivitiesButtonName;
+        this._checkConflictSignal = null;
+        this._timeoutId = 0;
     },
 
     _setIcon: function() {
@@ -289,7 +300,7 @@ const Configurator = new Lang.Class({
     },
 
     _insertButton: function(button) {
-        Main.panel._leftBox.insert_child_at_index(button.actor, this._position);
+        Main.panel._leftBox.insert_child_at_index(button.actor, 0);
         button.actor.show();
     },
 
@@ -299,10 +310,13 @@ const Configurator = new Lang.Class({
     },
 
     _setActivities: function() {
-        if(this._settings.get_boolean(Keys.REMOVED))
+        if(this._settings.get_boolean(Keys.REMOVED)) {
+            this._name = ButtonRemoved;
             this._removeButton(this._activitiesIconButton);
-        else
+        } else {
+            this._name = ActivitiesIconButtonName;
             this._insertButton(this._activitiesIconButton);
+        }
     },
 
     _setTransparentPanel: function(transparent) {
@@ -326,48 +340,82 @@ const Configurator = new Lang.Class({
         this._activitiesIconButton = null;
     },
 
-    enable: function() {
-        this._activitiesIconButton = new ActivitiesIconButton();
-        let children = Main.panel._leftBox.get_children();
-        for(let i = 0; i< children.length; i++) {
-            if(children[i].name == 'panelActivities') {
-                this._position = i;
-                break;
+    _checkButtonConflicts: function() {
+        this._noConflicts = true;
+        if(this._name != ButtonRemoved) {
+            let children = Main.panel._leftBox.get_children();
+            if(children[0].name != this._name) {
+                Notify.notifyError(_N(CONFLICT),Readme.makeTextStr(Readme.CONFLICTS));
+                this._noConflicts = false;
             }
         }
-        this._iconPath = '';
-        this._insertButton(this._activitiesIconButton);
-        this._removeButton(Main.panel._activitiesButton);
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.REMOVED, Lang.bind(this, this._setActivities)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.NEW_TXT, Lang.bind(this, this._setText)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.NEW_ICO, Lang.bind(this, this._setIcon)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.HOTC_TO, Lang.bind(this, this._setHotCornerTimeOut)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.NO_HOTC, Lang.bind(this, this._setHotCorner)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.NO_TEXT, Lang.bind(this, this._setText)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.NO_ICON, Lang.bind(this, this._setIcon)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.PAD_TXT, Lang.bind(this, this._setText)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.PAD_ICO, Lang.bind(this, this._setIcon)));
-        this._settingsSignals.push(this._settings.connect('changed::'+Keys.TRS_PAN, Lang.bind(this, this._setTransparent)));
-        this._setText();
-        this._setHotCornerTimeOut();
-        this._setHotCorner();
-        if(!this._settings.get_boolean(Keys.NO_ICON))
-           this._setIcon();
-        this._setActivities();
-        this._setTransparent();
+    },
+
+    _conflicts: function() {
+        if(this._timeoutId) {
+            Mainloop.source_remove(this._timeoutId);
+            this._timeoutId = 0;
+        }
+        this._checkButtonConflicts();
+        if(this._enabled && !this._noConflicts) {
+            this.disable();
+        } else if(!this._enabled && this._noConflicts) {
+            this.enable();
+        }
+        return false;
+    },
+
+    enable: function() {
+        if(this._noConflicts) {
+            this._activitiesIconButton = new ActivitiesIconButton();
+            let children = Main.panel._leftBox.get_children();
+            this._iconPath = '';
+            this._insertButton(this._activitiesIconButton);
+            this._removeButton(Main.panel._activitiesButton);
+            this._name = ActivitiesIconButtonName;
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.REMOVED, Lang.bind(this, this._setActivities)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.NEW_TXT, Lang.bind(this, this._setText)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.NEW_ICO, Lang.bind(this, this._setIcon)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.HOTC_TO, Lang.bind(this, this._setHotCornerTimeOut)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.NO_HOTC, Lang.bind(this, this._setHotCorner)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.NO_TEXT, Lang.bind(this, this._setText)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.NO_ICON, Lang.bind(this, this._setIcon)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.PAD_TXT, Lang.bind(this, this._setText)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.PAD_ICO, Lang.bind(this, this._setIcon)));
+            this._settingsSignals.push(this._settings.connect('changed::'+Keys.TRS_PAN, Lang.bind(this, this._setTransparent)));
+            this._setText();
+            this._setHotCornerTimeOut();
+            this._setHotCorner();
+            if(!this._settings.get_boolean(Keys.NO_ICON))
+            this._setIcon();
+            this._setActivities();
+            this._setTransparent();
+            this._enabled = true;
+            // Check for conflicts after enable completes.
+            this._checkConflictSignal = Main.panel._leftBox.connect('actor-added', Lang.bind(this, this._conflicts));
+        } else {
+            // Check for conflicts when enabled.
+            this._timeoutId = Mainloop.timeout_add(500, Lang.bind(this, this._conflicts));
+        }
     },
 
     disable: function() {
-        this._setTransparentPanel(false);
-        for (let i = 0; i < this._settingsSignals.length; i++)
-	    this._settings.disconnect(this._settingsSignals[i]);
-        this._settingsSignals = [];
-        if(!this._settings.get_boolean(Keys.REMOVED))
-            this._removeButton(this._activitiesIconButton);
-        this._insertButton(Main.panel._activitiesButton);
-        this._activitiesIconButton.destroy();
-        this._activitiesIconButton = null;
-    },
+        if (this._enabled) {
+            this._setTransparentPanel(false);
+            Main.panel._leftBox.disconnect(this._checkConflictSignal);
+            for (let i = 0; i < this._settingsSignals.length; i++)
+	        this._settings.disconnect(this._settingsSignals[i]);
+            this._settingsSignals = [];
+            if(!this._settings.get_boolean(Keys.REMOVED))
+                this._removeButton(this._activitiesIconButton);
+            this._insertButton(Main.panel._activitiesButton);
+            this._name = ActivitiesButtonName;
+            this._activitiesIconButton.destroy();
+            this._activitiesIconButton = null;
+            this._noConflicts = false;
+            this._enabled = false;
+        }
+    }
 });
 
 function init(metadata) {

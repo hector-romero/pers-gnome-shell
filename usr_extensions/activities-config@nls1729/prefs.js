@@ -34,78 +34,78 @@ const README = _N("README");
 const TITLE = _N("Choose Icon");
 const DEFAULT_ICO = Me.path + '/face-smile-3.svg'; // From Tango Project - Public Domain
 
+// Version 5
+
 function init() {
     Convenience.initTranslations();
 }
 
-const ActivitiesConfiguratorSettingsWidget = new GObject.Class({
-    Name: 'ActivitiesConfigurator.Prefs.ActivitiesConfiguratorSettingsWidget',
-    GTypeName: 'ActivitiesConfiguratorSettingsWidget',
-    Extends: Gtk.Grid,
+function ActivitiesConfiguratorSettingsWidget() {
+    this._init();
+}
 
-    _init: function(params) {	
-        this.parent(params);
-        this.margin = this.row_spacing = this.column_spacing = 10;
+ActivitiesConfiguratorSettingsWidget.prototype = {
+
+    _init: function() {
+        this._grid = new Gtk.Grid();
+        this._grid.margin = this._grid.row_spacing = this._grid.column_spacing = 10;
 	this._settings = Convenience.getSettings();
-        this.scollingWindow = new Gtk.ScrolledWindow({'hscrollbar-policy': Gtk.PolicyType.AUTOMATIC,
-                                                      'vscrollbar-policy': Gtk.PolicyType.AUTOMATIC,
-                                                      'hexpand': true, 'vexpand': true});
-        this.attach(new Gtk.Label({ label: _(TXT_INSTS), wrap: true, xalign: 0.0 }), 0,  0, 1, 1);
-        this.attach(new Gtk.Label({ label: _(HPAD_TEXT), wrap: true, xalign: 0.0 }), 0,  2, 3, 1);
-        this.attach(new Gtk.Label({ label: _(HIDE_TEXT), wrap: true, xalign: 0.0 }), 0,  4, 3, 1);
-        this.attach(new Gtk.Label({ label: _(ICO_INSTS), wrap: true, xalign: 0.0 }), 0,  6, 3, 1);
-        this.attach(new Gtk.Label({ label: _(HPAD_ICON), wrap: true, xalign: 0.0 }), 0,  8, 3, 1);
-        this.attach(new Gtk.Label({ label: _(HIDE_ICON), wrap: true, xalign: 0.0 }), 0, 10, 3, 1);
-        this.attach(new Gtk.Label({ label: _(SETS_HOTC), wrap: true, xalign: 0.0 }), 0, 12, 3, 1);
-        this.attach(new Gtk.Label({ label: _(NADA_HOTC), wrap: true, xalign: 0.0 }), 0, 14, 3, 1);
-        this.attach(new Gtk.Label({ label: _(RMV_ACTIV), wrap: true, xalign: 0.0 }), 0, 16, 3, 1);
-        this.attach(new Gtk.Label({ label: _(TRANS_PAN), wrap: true, xalign: 0.0 }), 0, 18, 3, 1);
-        this.attach(new Gtk.Label({ label: _(RST_INSTS), wrap: true, xalign: 0.0 }), 0, 20, 4, 1);
-        this.attach(new Gtk.Label({ label: _(RME_INSTS), wrap: true, xalign: 0.0 }), 0, 22, 4, 1);
+        this._grid.attach(new Gtk.Label({ label: _(TXT_INSTS), wrap: true, xalign: 0.0 }), 0,  0, 1, 1);
+        this._grid.attach(new Gtk.Label({ label: _(HPAD_TEXT), wrap: true, xalign: 0.0 }), 0,  2, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(HIDE_TEXT), wrap: true, xalign: 0.0 }), 0,  4, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(ICO_INSTS), wrap: true, xalign: 0.0 }), 0,  6, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(HPAD_ICON), wrap: true, xalign: 0.0 }), 0,  8, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(HIDE_ICON), wrap: true, xalign: 0.0 }), 0, 10, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(SETS_HOTC), wrap: true, xalign: 0.0 }), 0, 12, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(NADA_HOTC), wrap: true, xalign: 0.0 }), 0, 14, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(RMV_ACTIV), wrap: true, xalign: 0.0 }), 0, 16, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(TRANS_PAN), wrap: true, xalign: 0.0 }), 0, 18, 3, 1);
+        this._grid.attach(new Gtk.Label({ label: _(RST_INSTS), wrap: true, xalign: 0.0 }), 0, 20, 4, 1);
+        this._grid.attach(new Gtk.Label({ label: _(RME_INSTS), wrap: true, xalign: 0.0 }), 0, 22, 4, 1);
         let applyBtn = new Gtk.Button({ label: _(APPLY) });
-        this.attach(applyBtn, 4, 0, 1, 1);
+        this._grid.attach(applyBtn, 4, 0, 1, 1);
         this._entry = new Gtk.Entry({ hexpand: true });
-        this.attach(this._entry, 1, 0, 3, 1);
+        this._grid.attach(this._entry, 1, 0, 3, 1);
         applyBtn.connect('clicked', Lang.bind(this, this._setActivitiesText));
         this._hpadText = new Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 15, 1);
         this._hpadText.set_value(this._settings.get_int(Keys.PAD_TXT));
         this._hpadText.connect('value-changed', Lang.bind(this, this._onTextPaddingChanged));
-        this.attach(this._hpadText, 3, 2, 2, 1);
+        this._grid.attach(this._hpadText, 3, 2, 2, 1);
         this._noText = new Gtk.Switch({active: this._settings.get_boolean(Keys.NO_TEXT)});
-        this.attach(this._noText, 4, 4, 1, 1);
+        this._grid.attach(this._noText, 4, 4, 1, 1);
         this._noText.connect('notify::active', Lang.bind(this, this._setNoText));
         this._iconImage = new Gtk.Image();
         this._iconPath = this._settings.get_string(Keys.NEW_ICO) || DEFAULT_ICO;
         this._loadIcon(this._iconPath);
-        this.attach(this._iconImage, 3, 6, 1, 1);
+        this._grid.attach(this._iconImage, 3, 6, 1, 1);
         let iconBtn = new Gtk.Button({ label: _(SELECT) });
-        this.attach(iconBtn, 4, 6, 1, 1);
+        this._grid.attach(iconBtn, 4, 6, 1, 1);
         iconBtn.connect('clicked', Lang.bind(this, this._setActivitiesIcon));
         this._hpadIcon = new Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 15, 1);
         this._hpadIcon.set_value(this._settings.get_int(Keys.PAD_ICO));
         this._hpadIcon.connect('value-changed', Lang.bind(this, this._onIconPaddingChanged));
-        this.attach(this._hpadIcon, 3, 8, 2, 1);
+        this._grid.attach(this._hpadIcon, 3, 8, 2, 1);
         this._noIcon = new Gtk.Switch({active: this._settings.get_boolean(Keys.NO_ICON)});
-        this.attach(this._noIcon, 4, 10, 1, 1);
+        this._grid.attach(this._noIcon, 4, 10, 1, 1);
         this._noIcon.connect('notify::active', Lang.bind(this, this._setNoIcon));
         this._hotCornerDelay = new Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 750, 25);
         this._hotCornerDelay.set_value(this._settings.get_int(Keys.HOTC_TO));
         this._hotCornerDelay.connect('value-changed', Lang.bind(this, this._onHotCornerDelayChanged));
-        this.attach(this._hotCornerDelay, 3, 12, 2, 1);
+        this._grid.attach(this._hotCornerDelay, 3, 12, 2, 1);
         this._noHotCorner = new Gtk.Switch({active: this._settings.get_boolean(Keys.NO_HOTC)});
-        this.attach(this._noHotCorner, 4, 14, 1, 1);
+        this._grid.attach(this._noHotCorner, 4, 14, 1, 1);
         this._noHotCorner.connect('notify::active', Lang.bind(this, this._setNoHotCorner));
         this._noActivities = new Gtk.Switch({active: this._settings.get_boolean(Keys.REMOVED)});
-        this.attach(this._noActivities, 4, 16, 1, 1);
+        this._grid.attach(this._noActivities, 4, 16, 1, 1);
         this._noActivities.connect('notify::active', Lang.bind(this, this._setNoActivities));
         this._transparentPanel = new Gtk.Switch({active: this._settings.get_boolean(Keys.TRS_PAN)});
-        this.attach(this._transparentPanel, 4, 18, 1, 1);
+        this._grid.attach(this._transparentPanel, 4, 18, 1, 1);
         this._transparentPanel.connect('notify::active', Lang.bind(this, this._setTransparentPanel));
         let defaultsBtn = new Gtk.Button({ label: _(RESET) } );
-        this.attach(defaultsBtn, 4, 20, 1, 1);
+        this._grid.attach(defaultsBtn, 4, 20, 1, 1);
         defaultsBtn.connect('clicked', Lang.bind(this, this._resetSettings));
         let readmeBtn = new Gtk.Button({ label: _(README) } )
-        this.attach(readmeBtn, 4, 22, 1, 1);
+        this._grid.attach(readmeBtn, 4, 22, 1, 1);
         readmeBtn.connect('clicked', Readme.showReadme);
     },
 
@@ -193,13 +193,20 @@ const ActivitiesConfiguratorSettingsWidget = new GObject.Class({
     _loadIcon: function(path) {
         let pixbuf = new GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 32, 32, null);
         this._iconImage.set_from_pixbuf(pixbuf);
-    }
-});
+    },
 
-function buildPrefsWidget() {    
+    _completePrefsWidget: function() {
+        let scollingWindow = new Gtk.ScrolledWindow({
+                                 'hscrollbar-policy': Gtk.PolicyType.AUTOMATIC,
+                                 'vscrollbar-policy': Gtk.PolicyType.AUTOMATIC,
+                                 'hexpand': true, 'vexpand': true});
+        scollingWindow.add_with_viewport(this._grid);
+        scollingWindow.show_all();
+        return scollingWindow;
+    }
+};
+
+function buildPrefsWidget() {
     let widget = new ActivitiesConfiguratorSettingsWidget();
-    // Put widget in scroller for small screens (Version 4)
-    widget.scollingWindow.add_with_viewport(widget);
-    widget.scollingWindow.show_all();
-    return widget.scollingWindow;
+    return widget._completePrefsWidget();
 }

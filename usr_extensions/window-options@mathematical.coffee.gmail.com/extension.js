@@ -19,6 +19,10 @@ const Meta = imports.gi.Meta;
 const Mainloop = imports.mainloop;
 const Wnck = imports.gi.Wnck;
 const Signals  = imports.signals;
+const St = imports.gi.St;
+const Main = imports.ui.main;
+const Tweener = imports.ui.tweener;
+
 const Shell = imports.gi.Shell;
 
 const ExtensionSystem = imports.ui.extensionSystem;
@@ -498,17 +502,6 @@ function enable() {
             windowOptions.menuPatch.destroy(); // will trigger a re-display.
         }
     });
-    detectExtensionsID = ExtensionSystem.connect('extension-state-changed',
-        function (obj, extension) {
-            if (extension.state === ExtensionSystem.ExtensionState.ENABLED &&
-                extension.uuid === 'StatusTitleBar@devpower.org') {
-                LOG('enabled status title bar');
-                // since StatusTitleBar simply hides the existing appMenu and
-                // puts in its own, we have to wait and re-patch it.
-                disable();
-                enable();
-            }
-        });
 }
 
 function disable() {
