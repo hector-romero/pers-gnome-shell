@@ -17,7 +17,7 @@ const Gdk = imports.gi.Gdk;
 const Lang = imports.lang;
 const Meta = imports.gi.Meta;
 const Mainloop = imports.mainloop;
-const Wnck = imports.gi.Wnck;
+//const Wnck = imports.gi.Wnck;
 const Signals  = imports.signals;
 const St = imports.gi.St;
 const Main = imports.ui.main;
@@ -26,7 +26,7 @@ const Tweener = imports.ui.tweener;
 const Shell = imports.gi.Shell;
 
 const ExtensionSystem = imports.ui.extensionSystem;
-const Main = imports.ui.main;
+//const Main = imports.ui.main;
 const PopupMenu = imports.ui.popupMenu;
 
 const ExtensionUtils = imports.misc.extensionUtils;
