@@ -80,23 +80,17 @@ LockKeysIndicator.prototype = {
 		// icons. Fortunately we can add our directory to the search path.
 		Gtk.IconTheme.get_default().append_search_path(Meta.path);
 
-		this.numIcon = new St.Icon({icon_name: "numlock-enabled",
-			icon_type: St.IconType.SYMBOLIC,
-			style_class: 'system-status-icon'});
+		
 		this.capsIcon = new St.Icon({icon_name: "capslock-enabled",
 			icon_type: St.IconType.SYMBOLIC,
 			style_class: 'system-status-icon'});
 
 		this.layoutManager = new St.BoxLayout({vertical: false,
 			style_class: 'lockkeys-container'});
-		this.layoutManager.add(this.numIcon);
+
 		this.layoutManager.add(this.capsIcon);
 
 		this.actor.add_actor(this.layoutManager);
-
-		this.numMenuItem = new PopupMenu.PopupSwitchMenuItem(_('Num Lock'), false, { reactive: true });
-		this.numMenuItem.connect('toggled', Lang.bind(this, this._handleNumlockMenuItem));
-		this.menu.addMenuItem(this.numMenuItem);
 
 		this.capsMenuItem = new PopupMenu.PopupSwitchMenuItem(_('Caps Lock'), false, { reactive: true });
 		this.capsMenuItem.connect('toggled', Lang.bind(this, this._handleCapslockMenuItem));
@@ -119,11 +113,6 @@ LockKeysIndicator.prototype = {
 		}
 	}, 
 
-	_handleNumlockMenuItem: function(actor, event) {
-		keyval = Gdk.keyval_from_name("Num_Lock");
-		Caribou.XAdapter.get_default().keyval_press(keyval);
-		Caribou.XAdapter.get_default().keyval_release(keyval);
-	}, 
 
 	_handleCapslockMenuItem: function(actor, event) {
 		keyval = Gdk.keyval_from_name("Caps_Lock");
@@ -136,12 +125,7 @@ LockKeysIndicator.prototype = {
 	},
 
 	_handleStateChange: function(actor, event) {
-		if (this.numlock_state != this._getNumlockState()) {
-			let notification_text = _('Num Lock') + ' ' + this._getStateText(this._getNumlockState());
-			if (this.notificationsMenuItem.state) {
-				this._showNotification(notification_text, "numlock-enabled");
-			}
-		}
+		
 		if (this.capslock_state != this._getCapslockState()) {
 			let notification_text = _('Caps Lock') + ' ' + this._getStateText(this._getCapslockState());
 			if (this.notificationsMenuItem.state) {
@@ -152,20 +136,15 @@ LockKeysIndicator.prototype = {
 	}, 
 
 	_updateState: function() {
-		this.numlock_state = this._getNumlockState();
-		this.capslock_state = this._getCapslockState();
 
-		if (this.numlock_state)
-			this.numIcon.set_icon_name("numlock-enabled");
-		else
-			this.numIcon.set_icon_name("numlock-disabled");
+		this.capslock_state = this._getCapslockState();
 
 		if (this.capslock_state)
 			this.capsIcon.set_icon_name("capslock-enabled");
 		else
 			this.capsIcon.set_icon_name("capslock-disabled");
 
-		this.numMenuItem.setToggleState( this.numlock_state );
+
 		this.capsMenuItem.setToggleState( this.capslock_state );
 	},
 
@@ -205,9 +184,6 @@ LockKeysIndicator.prototype = {
 		return state ? _('On') : _('Off');
 	},
 
-	_getNumlockState: function() {
-		return Keymap.get_num_lock_state();
-	},
 
 	_getCapslockState: function() {
 		return Keymap.get_caps_lock_state();
