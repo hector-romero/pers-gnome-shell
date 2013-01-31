@@ -22,15 +22,17 @@ let Schema;
 
 const POPUP_FADE_TIME = 0.0; // seconds
 
+const AltTabPopupW = new Lang.Class({
+    Name: 'AltTabPopupW',
+    Extends: AltTab.AltTabPopup,
 
-function AltTabPopupW() {
-    this._init();
-}
+    _init: function(index) {
+       this._index = index;
+       this._modifierMask=0;
+       this.parent();
+    },
 
-AltTabPopupW.prototype = {
-    __proto__ : AltTab.AltTabPopup.prototype,
-
-    show : function(backward, switch_group) {
+    show : function(backward, binding, mask) {
         let appSys = Shell.AppSystem.get_default();
         let apps = appSys.get_running ();
 
@@ -40,6 +42,7 @@ AltTabPopupW.prototype = {
         if (!Main.pushModal(this.actor))
             return false;
         this._haveModal = true;
+	this._modifierMask = AltTab.primaryModifier(mask);
 
         this.actor.connect('key-press-event', Lang.bind(this, this._keyPressEvent));
         this.actor.connect('key-release-event', Lang.bind(this, this._keyReleaseEvent));
@@ -47,35 +50,27 @@ AltTabPopupW.prototype = {
         this.actor.connect('button-press-event', Lang.bind(this, this._clickedOutside));
         this.actor.connect('scroll-event', Lang.bind(this, this._onScroll));
 
-        this._appSwitcher = new WindowSwitcher(apps, this);
+        this._appSwitcher = new WindowSwitcher(apps, this, this._index);
         this.actor.add_actor(this._appSwitcher.actor);
-        this._appSwitcher.connect('item-activated', Lang.bind(this, this._appActivated));
+        this._appSwitcher.connect('item-activated', Lang.bind(this, this._finish));
         this._appSwitcher.connect('item-entered', Lang.bind(this, this._appEntered));
 
         this._appIcons = this._appSwitcher.icons;
 
         // Make the initial selection
-        if (switch_group) {
-            if (backward) {
-                this._select(0, this._appIcons[0].cachedWindows.length - 1);
-            } else {
-                if (this._appIcons[0].cachedWindows.length > 1)
-                    this._select(0, 1);
-                else
-                    this._select(0, 0);
-            }
-        } else if (this._appIcons.length == 1) {
+        if (this._appIcons.length == 1) {
             this._select(0);
         } else if (backward) {
             this._select(this._appIcons.length - 1);
         } else {
-            if (this._appIcons.length > 0) {
+            if (this._appIcons.length > 0 && this._index == 0) {
                 this._select(1);
-            }
+            } else if(this._appIcons.length > 0)
+		this._select(0);
         }
 
         let [x, y, mods] = global.get_pointer();
-        if (!(mods & Gdk.ModifierType.MOD1_MASK)) {
+        if (!(mods & this._modifierMask)) {
             this._finish();
             return false;
         }
@@ -102,19 +97,19 @@ AltTabPopupW.prototype = {
         if(action == Meta.KeyBindingAction.WORKSPACE_LEFT) {
             this.destroy();
             this.actionMoveWorkspaceLeft();
-            new AltTabPopupW().show();
+            new AltTabPopupW(0).show(backwards,"",event_state);
         } else if(action == Meta.KeyBindingAction.WORKSPACE_RIGHT) {
             this.destroy();
             this.actionMoveWorkspaceRight();
-            new AltTabPopupW().show();
+            new AltTabPopupW(0).show(backwards,"",event_state);
         } else if(action == Meta.KeyBindingAction.WORKSPACE_DOWN) {
             this.destroy();
             this.actionMoveWorkspaceDown();
-            new AltTabPopupW().show();
+            new AltTabPopupW(0).show(backwards,"",event_state);
         } else if(action == Meta.KeyBindingAction.WORKSPACE_UP) {
             this.destroy();
             this.actionMoveWorkspaceUp();
-            new AltTabPopupW().show();
+            new AltTabPopupW(0).show(backwards,"",event_state);
         } else if (keysym == Clutter.Escape) {
             this.destroy();
         } else if (action == Meta.KeyBindingAction.SWITCH_GROUP) {
@@ -137,8 +132,23 @@ AltTabPopupW.prototype = {
                 this._select(this._previousApp());
             else if (keysym == Clutter.Right)
                 this._select(this._nextApp());
-            else if (keysym == Clutter.Down)
+            else if (keysym == Clutter.Down && !Schema.get_boolean("workspace-navigation"))
                 this._select(this._currentApp, 0);
+            else if (Schema.get_boolean("workspace-navigation")) {
+                if (keysym == Clutter.Up) {
+                    let idx = this._index - 1;
+                    if (global.screen.get_active_workspace_index() + idx >= 0) {
+                        this.destroy();
+                        new AltTabPopupW(idx).show(backwards,"",event_state);
+                    }
+                } else if (keysym == Clutter.Down) {
+                    let idx = this._index + 1;
+                    if (global.screen.get_active_workspace_index() + idx + 1 < global.screen.n_workspaces) {
+                        this.destroy();
+                        new AltTabPopupW(idx).show(backwards,"",event_state);
+                    }
+                }
+            }
         }
 
         return true;
@@ -146,8 +156,9 @@ AltTabPopupW.prototype = {
 
     _keyReleaseEvent : function(actor, event) {
         let [x, y, mods] = global.get_pointer();
-        if (!(mods & Gdk.ModifierType.MOD1_MASK))
-            this._finish();
+        let state = mods & this._modifierMask;
+	if (state == 0)
+		 this._finish();
 
         return true;
     },
@@ -161,7 +172,7 @@ AltTabPopupW.prototype = {
     },
 
     actionMoveWorkspaceLeft: function() {
-        let rtl = (St.Widget.get_default_direction() == St.TextDirection.RTL);
+        let rtl = (Clutter.get_default_text_direction() == Clutter.TextDirection.RTL);
         let activeWorkspaceIndex = global.screen.get_active_workspace_index();
         let indexToActivate = activeWorkspaceIndex;
         if (rtl && activeWorkspaceIndex < global.screen.n_workspaces - 1)
@@ -174,7 +185,7 @@ AltTabPopupW.prototype = {
     },
 
     actionMoveWorkspaceRight: function() {
-        let rtl = (St.Widget.get_default_direction() == St.TextDirection.RTL);
+        let rtl = (Clutter.get_default_text_direction() == Clutter.TextDirection.RTL);
         let activeWorkspaceIndex = global.screen.get_active_workspace_index();
         let indexToActivate = activeWorkspaceIndex;
         if (rtl && activeWorkspaceIndex > 0)
@@ -205,7 +216,7 @@ AltTabPopupW.prototype = {
         if (indexToActivate != activeWorkspaceIndex)
             global.screen.get_workspace_by_index(indexToActivate).activate(global.get_current_time());
     }
-};
+});
 
 function AppIcon(app, window) {
     this._init(app, window);
@@ -223,7 +234,7 @@ AppIcon.prototype = {
         this.actor = new St.BoxLayout({ style_class: 'alt-tab-app',
                                          vertical: true });
         this.icon = null;
-        this._iconBin = new St.Bin({ x_fill: true, y_fill: true });
+        this._iconBin = new St.Bin({ x_fill: false, y_fill: false });
 
         this.actor.add(this._iconBin, { x_fill: false, y_fill: false } );
 
@@ -262,17 +273,19 @@ AppIcon.prototype = {
 
 };
 
-function WindowSwitcher(apps, altTabPopup) {
-    this._init(apps, altTabPopup);
+function WindowSwitcher(apps, altTabPopup, index) {
+    this._init(apps, altTabPopup, index);
 }
 
 WindowSwitcher.prototype = {
     __proto__ : AltTab.AppSwitcher.prototype,
 
-    _init : function(apps, altTabPopup) {
+    _init : function(apps, altTabPopup, index) {
         AltTab.SwitcherList.prototype._init.call(this, true);
 
-        let activeWorkspace = global.screen.get_active_workspace();
+        this._index = global.screen.get_active_workspace_index() + index;
+
+        let activeWorkspace = global.screen.get_workspace_by_index(this._index);
         let workspaceIcons = [];
         for (let i = 0; i < apps.length; i++) {
             let windows = apps[i].get_windows();
@@ -348,6 +361,7 @@ WindowSwitcher.prototype = {
         while(this._items.length > 1 && this._items[j].style_class != 'item-box') {
                 j++;
         }
+	if(!this._items[j])return;
         let themeNode = this._items[j].get_theme_node();
         let iconPadding = themeNode.get_horizontal_padding();
         let iconBorder = themeNode.get_border_width(St.Side.LEFT) + themeNode.get_border_width(St.Side.RIGHT);
@@ -395,8 +409,10 @@ function init(metadata) {
     Schema = convenience.getSettings(extension, SETTINGS_SCHEMA);
 }
 
-function doAltTab(shellwm, binding, window, backwards) {
-    new AltTabPopupW().show();
+function doAltTab(display, screen, window, binding) {
+    let modifiers = binding.get_modifiers()
+    let backwards = modifiers & Meta.VirtualModifier.SHIFT_MASK;
+    new AltTabPopupW(0).show(backwards, binding.get_name(), binding.get_mask());
 }
 
 function enable() {
