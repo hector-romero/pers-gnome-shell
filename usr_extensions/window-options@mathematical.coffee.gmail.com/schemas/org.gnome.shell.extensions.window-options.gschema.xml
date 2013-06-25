@@ -7,9 +7,24 @@
         <description>If this many items or more are already in the appMenu, put the window options in a submenu. Set to -1 to ignore.</description>
     </key>
     <key type="as" name="order">
-        <default>['minimize', 'restore', 'maximize', 'separator', 'move', 'resize', 'separator', 'always-on-top', 'always-on-visible-workspace', 'move-to-workspace', 'separator', 'close-window']</default>
+        <default>['minimize', 'maximize', 'separator', 'move', 'resize', 'separator', 'always-on-top', 'always-on-visible-workspace', 'move-to-workspace', 'separator', 'close-window']</default>
         <summary>Order of items in the menu.</summary>
-        <description>Order of window options. You can put in: 'minimize', 'restore', 'maximize', 'move', 'resize', 'always-on-top', 'always-on-visible-workspace', 'move-to-workspace', 'move-to-next-workspace', 'move-to-previous-workspace', 'close-window', and 'separator' (for a separator).</description>
+        <description>Order of window options. You can put in: 'minimize', 'maximize', 'move', 'resize', 'raise', 'lower', 'always-on-top', 'always-on-visible-workspace', 'move-to-workspace', 'move-to-next-workspace', 'move-to-previous-workspace', 'close-window', and 'separator' (for a separator).</description>
+    </key>
+    <key type="b" name="maximize-is-toggle">
+        <default>false</default>
+        <summary>Whether to display maximize/restore item as a toggle</summary>
+        <description>Whether to display maximize/restore item as a toggle (if false it will be an item with alternating text).</description>
+    </key>
+    <key type="b" name="always-on-visible-workspace-is-toggle">
+        <default>true</default>
+        <summary>Whether to display always on this/visible workspace item as a toggle</summary>
+        <description>Whether to display always on this/visible workspace item as a toggle (if false it will be an item with alternating text).</description>
+    </key>
+    <key type="b" name="always-on-top-is-toggle">
+        <default>true</default>
+        <summary>DO NOT CHANGE: Whether to display always on top item as a toggle</summary>
+        <description>DO NOT CHANGE: Whether to display always on top item as a toggle.</description>
     </key>
   </schema>
 </schemalist>

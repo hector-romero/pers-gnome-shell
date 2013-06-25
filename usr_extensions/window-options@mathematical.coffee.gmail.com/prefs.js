@@ -8,12 +8,14 @@ const Gio = imports.gi.Gio;
 const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 
-const Gettext = imports.gettext.domain('gnome-shell-extensions');
-const _ = Gettext.gettext;
-
 const ExtensionUtils = imports.misc.extensionUtils;
 const Me = ExtensionUtils.getCurrentExtension();
 const Convenience = Me.imports.convenience;
+
+const Gettext = imports.gettext;
+const _ = Gettext.domain('mutter').gettext;
+const WO_ = Gettext.gettext; // my additional translations
+
 
 const LENGTH_CUTOFF_KEY = 'length-cutoff';
 const ORDER_KEY = 'order';
@@ -24,28 +26,51 @@ const ITEM_KEYS = {
     MAXIMIZE: 'maximize',
     MOVE: 'move',
     RESIZE: 'resize',
+    RAISE: 'raise',
+    LOWER: 'lower',
+    NOT_ALWAYS_ON_TOP: 'not-always-on-top',
     ALWAYS_ON_TOP: 'always-on-top',
     ALWAYS_ON_VISIBLE_WORKSPACE: 'always-on-visible-workspace',
+    ALWAYS_ON_THIS_WORKSPACE: 'always-on-this-workspace',
     MOVE_TO_WORKSPACE: 'move-to-workspace',
     MOVE_TO_PREVIOUS_WORKSPACE: 'move-to-previous-workspace',
     MOVE_TO_NEXT_WORKSPACE: 'move-to-next-workspace',
     CLOSE_WINDOW: 'close-window',
     SEPARATOR: 'separator'
 }
-const ITEM_LABELS = {};
-ITEM_LABELS[ITEM_KEYS.MINIMIZE] = _("Minimize");
-ITEM_LABELS[ITEM_KEYS.RESTORE] = _("Restore");
-ITEM_LABELS[ITEM_KEYS.MAXIMIZE] = _("Maximize");
-ITEM_LABELS[ITEM_KEYS.MOVE] = _("Move");
-ITEM_LABELS[ITEM_KEYS.RESIZE] = _("Resize");
-ITEM_LABELS[ITEM_KEYS.ALWAYS_ON_TOP] = _("Always on top");
-ITEM_LABELS[ITEM_KEYS.ALWAYS_ON_VISIBLE_WORKSPACE] = _("Always on visible workspace");
-ITEM_LABELS[ITEM_KEYS.MOVE_TO_WORKSPACE] = _("Move to workspace");
-ITEM_LABELS[ITEM_KEYS.MOVE_TO_PREVIOUS_WORKSPACE] = _("Move to previous workspace");
-ITEM_LABELS[ITEM_KEYS.MOVE_TO_NEXT_WORKSPACE] = _("Move to next workspace");
-ITEM_LABELS[ITEM_KEYS.CLOSE_WINDOW] = _("Close window");
-ITEM_LABELS[ITEM_KEYS.SEPARATOR] = _("Separator");
+const TOGGLE_KEY_SUFFIX='-is-toggle';
+// the following are there for convenience and should not be able to be added
+// to the menu.
+const DUMMY_KEYS=[ ITEM_KEYS.ALWAYS_ON_THIS_WORKSPACE, ITEM_KEYS.RESTORE, ITEM_KEYS.NOT_ALWAYS_ON_TOP ];
 
+// We use the mutter domain because they have the translations already.
+// Do not change any of the following strings or they will not be translated.
+// The have underscores in them as the keyboard navigation - I have to put
+// them in in order to have my strings translated, but I don't want them in
+// the menu so I'll remove them after.
+const ITEM_LABELS = {};
+ITEM_LABELS[ITEM_KEYS.MINIMIZE] = _("Mi_nimize");
+ITEM_LABELS[ITEM_KEYS.RESTORE] = _("Unma_ximize");
+ITEM_LABELS[ITEM_KEYS.MAXIMIZE] = _("Ma_ximize");
+ITEM_LABELS[ITEM_KEYS.MOVE] = _("_Move");
+ITEM_LABELS[ITEM_KEYS.RESIZE] = _("_Resize");
+ITEM_LABELS[ITEM_KEYS.LOWER] = WO_("Lower");
+ITEM_LABELS[ITEM_KEYS.RAISE] = WO_("Raise");
+ITEM_LABELS[ITEM_KEYS.ALWAYS_ON_TOP] = _("Always on _Top");
+ITEM_LABELS[ITEM_KEYS.ALWAYS_ON_VISIBLE_WORKSPACE] = _("_Always on Visible Workspace");
+ITEM_LABELS[ITEM_KEYS.ALWAYS_ON_THIS_WORKSPACE] = _("_Only on This Workspace");
+ITEM_LABELS[ITEM_KEYS.MOVE_TO_WORKSPACE] = _("Move to Another _Workspace");
+ITEM_LABELS[ITEM_KEYS.MOVE_TO_PREVIOUS_WORKSPACE] = _("Move to Workspace _Up");
+ITEM_LABELS[ITEM_KEYS.MOVE_TO_NEXT_WORKSPACE] = _("Move to Workspace _Down");
+ITEM_LABELS[ITEM_KEYS.CLOSE_WINDOW] = _("_Close");
+ITEM_LABELS[ITEM_KEYS.SEPARATOR] = WO_("Separator");
+
+// remove '_' (keyboard accelerators)
+for (let tr in ITEM_LABELS) {
+    if (ITEM_LABELS.hasOwnProperty(tr)) {
+        ITEM_LABELS[tr] = ITEM_LABELS[tr].replace(/_/g, '');
+    }
+}
 
 function init() {
     Convenience.initTranslations();
@@ -136,7 +161,8 @@ const ListModel = new GObject.Class({
                 names = this._settings.get_strv(this._strvKey);
             // skip blanks, append to end:
             index = Math.min(index, names.length);
-            names[index] = this.get_value(iter, this._keyColumnIndex);
+            names[index] = this.get_value(iter, this._keyColumnIndex) || '';
+            LOG('changed row: ' + names);
 
             this._settings.set_strv(this._strvKey, names);
             this.unlock();
@@ -152,6 +178,7 @@ const ListModel = new GObject.Class({
             let names = this._settings.get_strv(this._strvKey);
             let label = this.get_value(iter, this._keyColumnIndex) || '';
             names.splice(index, 0, label);
+            LOG('inserted row: ' + names);
 
             this._settings.set_strv(this._strvKey, names);
             this.unlock();
@@ -167,15 +194,13 @@ const ListModel = new GObject.Class({
             let names = this._settings.get_strv(this._strvKey);
 
             if (index >= names.length) {
+                this.unlock();
                 return;
             }
 
             names.splice(index, 1);
-
-            // compact the array
-            for (let i = names.length -1; i >= 0 && !names[i]; i++) {
-                names.pop();
-            }
+            names = names.filter(function (w) { return w; });
+            LOG('deleted row: ' + names);
 
             this._settings.set_strv(this._strvKey, names);
 
@@ -217,9 +242,22 @@ const WindowOptionsPrefsWidget = new GObject.Class({
                 this._settings.set_int(LENGTH_CUTOFF_KEY, value);
             }
         }));
-        this.addRow(_("If this many items or more are already in the AppMenu, window options will be in a submenu\n (0: always in submenu, -1: never in submenu)"), spinButton, true);
+        this.addRow(WO_("If this many items or more are already in the AppMenu, window options will be in a submenu\n (0: always in submenu, -1: never in submenu)"), spinButton, true);
 
-        let label = new Gtk.Label({label: _("Configure your window options menu here.")});
+        /* The "display as toggle or alternating text" */
+        let label = new Gtk.Label({label: WO_("Do you wish the following items to appear as label with on/off toggle,\n or a plain label that changes its text?")})
+        this.addItem(label);
+
+        this.addBoolean(ITEM_LABELS[ITEM_KEYS.MAXIMIZE] + '/' +
+            ITEM_LABELS[ITEM_KEYS.RESTORE],
+            ITEM_KEYS.MAXIMIZE + TOGGLE_KEY_SUFFIX
+        );
+        this.addBoolean(ITEM_LABELS[ITEM_KEYS.ALWAYS_ON_VISIBLE_WORKSPACE] +
+            '/' + ITEM_LABELS[ITEM_KEYS.ALWAYS_ON_THIS_WORKSPACE],
+            ITEM_KEYS.ALWAYS_ON_VISIBLE_WORKSPACE + TOGGLE_KEY_SUFFIX
+        );
+
+        label = new Gtk.Label({label: WO_("Configure your window options menu here.")});
         this.addItem(label);
 
         /* Make a treeview to display the current menu.
@@ -237,7 +275,7 @@ const WindowOptionsPrefsWidget = new GObject.Class({
         this._treeView.get_selection().set_mode(Gtk.SelectionMode.SINGLE);
 
         // add one column being the items.
-        let col = new Gtk.TreeViewColumn({ title: _("Items") });
+        let col = new Gtk.TreeViewColumn({ title: WO_("Items") });
         let textRenderer = new Gtk.CellRendererText({ editable: false });
         col.pack_start(textRenderer, true);
         col.add_attribute(textRenderer, 'text', this._store.Columns.LABEL);
@@ -269,7 +307,7 @@ const WindowOptionsPrefsWidget = new GObject.Class({
 
         /* "default" button TODO: how to get it to show the label? */
         let defaultButton = new Gtk.ToolButton({
-            icon_widget: new Gtk.Label({label: _("Defaults")})
+            icon_widget: new Gtk.Label({label: WO_("Defaults")})
         });
         defaultButton.connect('clicked', Lang.bind(this, function () {
             this._settings.reset(LENGTH_CUTOFF_KEY);
@@ -278,6 +316,12 @@ const WindowOptionsPrefsWidget = new GObject.Class({
             this._store._reloadFromSettings();
         }));
         toolbar.add(defaultButton);
+    },
+
+    addBoolean: function (text, key) {
+        let item = new Gtk.Switch({active: this._settings.get_boolean(key)});
+        this._settings.bind(key, item, 'active', Gio.SettingsBindFlags.DEFAULT);
+        this.addRow(text, item);
     },
 
     addRow: function (text, widget, wrap) {
@@ -298,12 +342,12 @@ const WindowOptionsPrefsWidget = new GObject.Class({
     _newClicked: function () {
         /* Show them a list of allowable items to add in a dialog */
         let dialog = new Gtk.Dialog({
-            title: _("Select item to add"),
+            title: WO_("Select item to add"),
             transient_for: this.get_toplevel(),
             modal: true
         });
         dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL);
-        dialog.add_button(_("Add"), Gtk.ResponseType.OK);
+        dialog.add_button(WO_("Add"), Gtk.ResponseType.OK);
         dialog.set_default_response(Gtk.ResponseType.OK);
 
         // set up a treeview to show the available items
@@ -319,13 +363,20 @@ const WindowOptionsPrefsWidget = new GObject.Class({
             /* only add items we don't already have (except the separator) */
             if (ITEM_KEYS.hasOwnProperty(i) &&
                     (ITEM_KEYS[i] === ITEM_KEYS.SEPARATOR ||
-                         currentItems.indexOf(ITEM_KEYS[i]) === -1)) {
-                let iter = list.append();
+                         currentItems.indexOf(ITEM_KEYS[i]) === -1) &&
+                    DUMMY_KEYS.indexOf(ITEM_KEYS[i]) === -1) {
+                let iter = list.append(),
+                    label = ITEM_LABELS[ITEM_KEYS[i]];
+                if (ITEM_KEYS[i] === ITEM_KEYS.ALWAYS_ON_VISIBLE_WORKSPACE) {
+                    label = label + '/' + ITEM_LABELS[ITEM_KEYS.ALWAYS_ON_THIS_WORKSPACE];
+                } else if (ITEM_KEYS[i] === ITEM_KEYS.MAXIMIZE) {
+                    label = label + '/' + ITEM_LABELS[ITEM_KEYS.RESTORE];
+                }
                 // display the label they've currently set for that item
                 list.set(
                     iter,
                     [Columns.KEY, Columns.LABEL],
-                    [ITEM_KEYS[i], ITEM_LABELS[ITEM_KEYS[i]]]
+                    [ITEM_KEYS[i], label]
                 );
             }
         }
@@ -338,7 +389,7 @@ const WindowOptionsPrefsWidget = new GObject.Class({
         });
         treeView.get_selection().set_mode(Gtk.SelectionMode.SINGLE);
 
-        let column = new Gtk.TreeViewColumn({title: _("Items")});
+        let column = new Gtk.TreeViewColumn({title: WO_("Items")});
         let renderer = new Gtk.CellRendererText({editable: false});
         column.pack_start(renderer, true);
         column.add_attribute(renderer, 'text', Columns.LABEL);

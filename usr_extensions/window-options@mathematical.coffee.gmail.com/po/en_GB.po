@@ -1,0 +1,45 @@
+# English (British) translation for window-options.
+# This is really just here as an example.
+# Last updated: mathematical.coffee 17 July 2012
+msgid ""
+msgstr ""
+"Project-Id-Version: window-options\n"
+"Language: en_GB\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Window Options"
+msgstr "Window Options"
+
+# For the settings dialog.
+msgid "Separator"
+msgstr "Separator"
+
+msgid "If this many items or more are already in the AppMenu, window options will be in a submenu\n (0: always in submenu, -1: never in submenu)"
+msgstr "If this many items or more are already in the AppMenu, window options will be in a submenu\n (0: always in submenu, -1: never in submenu)"
+
+msgid "Configure your window options menu here."
+msgstr "Configure your window options menu here."
+
+msgid "Items"
+msgstr "Items"
+
+msgid "Defaults"
+msgstr "Defaults"
+
+msgid "Select item to add"
+msgstr "Select item to add"
+
+msgid "Add"
+msgstr "Add"
+
+msgid "Lower"
+msgstr "Lower"
+
+msgid "Raise"
+msgstr "Raise"
+
+#. Translators: leave 'gir1.0-wnck-3.0' alone.
+msgid "You need the Wnck GIR package (e.g. gir1.0-wnck-3.0) in order to have 'Always on Visible Workspace' and 'Always on Top' items."
+msgstr ""
