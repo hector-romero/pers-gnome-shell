@@ -4,11 +4,8 @@ const Gio = imports.gi.Gio;
 const Gtk = imports.gi.Gtk;
 const Gdk = imports.gi.Gdk;
 const GLib = imports.gi.GLib;
-const Gettext = imports.gettext;
+const Gettext = imports.gettext.domain('lockkeys');
 const _ = Gettext.gettext;
-
-const Keymap = Gdk.Keymap.get_default();
-const Caribou = imports.gi.Caribou;
 
 const Panel = imports.ui.panel;
 const Main = imports.ui.main;
@@ -16,14 +13,19 @@ const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
 const MessageTray = imports.ui.messageTray;
 
-const Meta = imports.misc.extensionUtils.getCurrentExtension();
+const Keymap = Gdk.Keymap.get_default();
+const Caribou = imports.gi.Caribou;
 
-//Preferences support
-const EXTENSION_PREFS = '{ "notifications": true }';
+const ExtensionUtils = imports.misc.extensionUtils;
+const Meta = ExtensionUtils.getCurrentExtension();
+const Utils = Meta.imports.utils;
 
-const CONFIG_DIR = "/gnome-shell-lockkeys";
-const CONFIG_FILE = "/gnome-shell-lockkeys/prefs.json";
 
+const STYLE = 'style';
+//const STYLE_NUMLOCK = 'numlock';
+const STYLE_CAPSLOCK = 'capslock';
+const STYLE_BOTH = 'both';
+const NOTIFICATIONS = 'notifications';
 
 let indicator;
 
@@ -33,38 +35,19 @@ function main() {
 }
 
 function init() {
+	Utils.initTranslations("lockkeys");
 }
 
 function enable() {
-	indicator = new LockKeysIndicator();
+	indicator = new LockKeysIndicator();	
+	Main.panel.addToStatusArea('lockkeys', indicator, 2);
 	indicator.setActive(true);
-	Main.panel._rightBox.insert_child_at_index(indicator.actor,  getPreferredIndex());
-	Main.panel._menus.addMenu(indicator.menu);
 }
 
 function disable() {
-	Main.panel._rightBox.remove_actor(indicator.actor);
-	Main.panel._menus.removeMenu(indicator.menu);
 	indicator.setActive(false);
-	//indicator.destroy();
+	indicator.destroy();
 }
-
-function getPreferredIndex() {
-	//just before xkb layout indicator
-	if (Main.panel._statusArea['keyboard'] != null) {
-		let xkb = Main.panel._statusArea['keyboard'];
-		let children = Main.panel._rightBox.get_children();
-
-		let i;
-		for (i = children.length - 1; i >= 0; i--) {
-			if(xkb == children[i]._delegate){
-				return i;
-			}
-		}
-	}
-	return 0;
-}
-
 
 function LockKeysIndicator() {
 	this._init();
@@ -78,41 +61,85 @@ LockKeysIndicator.prototype = {
 
 		// For highlight to work properly you have to use themed
 		// icons. Fortunately we can add our directory to the search path.
-		Gtk.IconTheme.get_default().append_search_path(Meta.path);
+		Gtk.IconTheme.get_default().append_search_path(Meta.dir.get_child('icons').get_path());
 
-		
-		this.capsIcon = new St.Icon({icon_name: "capslock-enabled",
-			icon_type: St.IconType.SYMBOLIC,
+		//this.numIcon = new St.Icon({icon_name: "numlock-enabled-symbolic",
+		//	style_class: 'system-status-icon'});
+		this.capsIcon = new St.Icon({icon_name: "capslock-enabled-symbolic",
 			style_class: 'system-status-icon'});
 
 		this.layoutManager = new St.BoxLayout({vertical: false,
 			style_class: 'lockkeys-container'});
-
+//		this.layoutManager.add(this.numIcon);
 		this.layoutManager.add(this.capsIcon);
 
 		this.actor.add_actor(this.layoutManager);
 
-		this.capsMenuItem = new PopupMenu.PopupSwitchMenuItem(_('Caps Lock'), false, { reactive: true });
+//		this.numMenuItem = new PopupMenu.PopupSwitchMenuItem(_("Num Lock"), false, { reactive: true });
+//		this.numMenuItem.connect('toggled', Lang.bind(this, this._handleNumlockMenuItem));
+//		this.menu.addMenuItem(this.numMenuItem);
+
+		this.capsMenuItem = new PopupMenu.PopupSwitchMenuItem(_("Caps Lock"), false, { reactive: true });
 		this.capsMenuItem.connect('toggled', Lang.bind(this, this._handleCapslockMenuItem));
 		this.menu.addMenuItem(this.capsMenuItem);
 
 		this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-		this.notificationsMenuItem = new PopupMenu.PopupSwitchMenuItem(_('Notifications'), false, { reactive: true });
-		this.notificationsMenuItem.connect('toggled', Lang.bind(this, this._handleNotificationsMenuItem));
-		this.menu.addMenuItem(this.notificationsMenuItem);
-
-		this._readprefs();
+		this.settingsMenuItem = new PopupMenu.PopupMenuItem(_("Settings"));
+		this.settingsMenuItem.connect('activate', Lang.bind(this, this._handleSettingsMenuItem));
+		this.menu.addMenuItem(this.settingsMenuItem);
+		
+		this.settings = Utils.getSettings(Meta);
+		this._handleSettingsChange();
+		this._updateState();
 	},
 
 	setActive: function(enabled) {
 		if (enabled) {
 			this._keyboardStateChangedId = Keymap.connect('state-changed', Lang.bind(this, this._handleStateChange));
+			this._settingsChangeId = this.settings.connect("changed::" + STYLE, Lang.bind(this, this._handleSettingsChange));
+			this._handleSettingsChange();
 			this._updateState();
 		} else {
 			Keymap.disconnect(this._keyboardStateChangedId);
+			this.settings.disconnect(this._settingsChangeId);
 		}
 	}, 
 
+	_handleSettingsMenuItem: function(actor, event) {
+		imports.misc.util.spawn(['gnome-shell-extension-prefs', 'lockkeys@vaina.lt']);
+	},
+	
+	_isShowNotifications: function() {
+		return this.settings.get_boolean(NOTIFICATIONS);
+	},
+	
+//	_isShowNumLock: function() {
+//		let widget_style = this.settings.get_string(STYLE);
+//		return widget_style == STYLE_NUMLOCK || widget_style == STYLE_BOTH; 
+//	},
+	
+	_isShowCapsLock: function() {
+		let widget_style = this.settings.get_string(STYLE);
+		return widget_style == STYLE_CAPSLOCK || widget_style == STYLE_BOTH; 
+	},
+	
+	_handleSettingsChange: function(actor, event) {
+//		if (this._isShowNumLock())
+//			this.numIcon.show();
+//		else
+//			this.numIcon.hide();
+		
+		if (this._isShowCapsLock())
+			this.capsIcon.show();
+		else
+			this.capsIcon.hide();
+	},
+	
+//	_handleNumlockMenuItem: function(actor, event) {
+//		keyval = Gdk.keyval_from_name("Num_Lock");
+//		Caribou.XAdapter.get_default().keyval_press(keyval);
+//		Caribou.XAdapter.get_default().keyval_release(keyval);
+//	}, 
 
 	_handleCapslockMenuItem: function(actor, event) {
 		keyval = Gdk.keyval_from_name("Caps_Lock");
@@ -120,31 +147,37 @@ LockKeysIndicator.prototype = {
 		Caribou.XAdapter.get_default().keyval_release(keyval);
 	},
 
-	_handleNotificationsMenuItem: function(actor, event) {
-		this._writeprefs();
-	},
-
 	_handleStateChange: function(actor, event) {
-		
+//		if (this.numlock_state != this._getNumlockState()) {
+//			let notification_text = _("Num Lock") + ' ' + this._getStateText(this._getNumlockState());
+//			if (this._isShowNotifications() && this._isShowNumLock()) {
+//				this._showNotification(notification_text, "numlock-enabled");
+//			}
+//		}
 		if (this.capslock_state != this._getCapslockState()) {
-			let notification_text = _('Caps Lock') + ' ' + this._getStateText(this._getCapslockState());
-			if (this.notificationsMenuItem.state) {
+			let notification_text = _("Caps Lock") + ' ' + this._getStateText(this._getCapslockState());
+			if (this._isShowNotifications() && this._isShowCapsLock()) {
 				this._showNotification(notification_text, "capslock-enabled");
 			}
 		}
 		this._updateState();
-	}, 
+	},
 
 	_updateState: function() {
-
+//		this.numlock_state = this._getNumlockState();
 		this.capslock_state = this._getCapslockState();
 
+//		if (this.numlock_state)
+//			this.numIcon.set_icon_name("numlock-enabled-symbolic");
+//		else
+//			this.numIcon.set_icon_name("numlock-disabled-symbolic");
+
 		if (this.capslock_state)
-			this.capsIcon.set_icon_name("capslock-enabled");
+			this.capsIcon.set_icon_name("capslock-enabled-symbolic");
 		else
-			this.capsIcon.set_icon_name("capslock-disabled");
-
-
+			this.capsIcon.set_icon_name("capslock-disabled-symbolic");
+			
+//		this.numMenuItem.setToggleState( this.numlock_state );
 		this.capsMenuItem.setToggleState( this.capslock_state );
 	},
 
@@ -181,47 +214,14 @@ LockKeysIndicator.prototype = {
 	},
 
 	_getStateText: function(state) {
-		return state ? _('On') : _('Off');
+		return state ? _("On") : _("Off");
 	},
 
+//	_getNumlockState: function() {
+//		return Keymap.get_num_lock_state();
+//	},
 
 	_getCapslockState: function() {
 		return Keymap.get_caps_lock_state();
-	},
-
-	_readprefs: function() {
-		let prefs = JSON.parse(EXTENSION_PREFS);
-		let _configFile = GLib.get_user_config_dir() + CONFIG_FILE;
-
-		if (GLib.file_test(_configFile, GLib.FileTest.EXISTS)) {
-			try {
-				let filedata = GLib.file_get_contents(_configFile);
-				global.log(_("Lockkeys: Reading configuration from = ") + _configFile);
-				prefs = JSON.parse(filedata[1]);
-			}
-			catch (e) {
-				global.logError(_("Lockkeys: Error reading config file = ") + e);
-			}
-		}
-
-		this.notificationsMenuItem.setToggleState(prefs.notifications);
-	},
-
-	_writeprefs: function() {
-		let prefs = JSON.parse(EXTENSION_PREFS);
-		prefs.notifications = this.notificationsMenuItem.state;
-		
-		let _configDir = GLib.get_user_config_dir() + CONFIG_DIR;
-		if (!GLib.file_test(_configDir, GLib.FileTest.EXISTS | GLib.FileTest.IS_DIR)) {
-			GLib.mkdir_with_parents(_configDir, 0755);
-		}
-		try {		
-			let _configFile = GLib.get_user_config_dir() + CONFIG_FILE;
-			let filedata = JSON.stringify(prefs, null, "  ");
-	        GLib.file_set_contents(_configFile, filedata, filedata.length);
-		} 
-		catch (e) {
-			global.logError(_("Lockkeys: Error writing config file = ") + e);
-		}
-	},
+	}
 }
