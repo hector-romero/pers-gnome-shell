@@ -1,10 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist gettext-domain="gnome-shell-extensions-mediaplayer">
+  <enum id='org.gnome.shell.extensions.mediaplayer.positions'>
+    <value value='0' nick='center'/>
+    <value value='1' nick='right'/>
+    <value value='2' nick='volume-menu'/>
+  </enum>
+  <enum id='org.gnome.shell.extensions.mediaplayer.status-type'>
+    <value value='0' nick='icon'/>
+    <value value='1' nick='cover'/>
+    <value value='2' nick='icon-fullcolor'/>
+  </enum>
   <schema path="/org/gnome/shell/extensions/mediaplayer/" id="org.gnome.shell.extensions.mediaplayer">
-    <key type="b" name="volumemenu">
-        <default>true</default>
-        <summary>Show the media player in the volume menu</summary>
-        <description>Whether to show the mediaplayer controls in the volume menu.</description>
+    <key name="indicator-position" enum="org.gnome.shell.extensions.mediaplayer.positions">
+        <default>'volume-menu'</default>
+        <summary>Where to display the indicator (center, right, volume menu)</summary>
     </key>
     <key type="b" name="volume">
         <default>false</default>
@@ -32,9 +41,22 @@
         <description>Starts the default mediaplayer by clicking on the media player status icon.</description>
     </key>
     <key type="b" name="rating">
-	<default>false</default>
-	<summary>Display song rating</summary>
-	<description>Display the currently playing song's rating on a 0 to 5 scale</description>
+    	<default>false</default>
+    	<summary>Display song rating</summary>
+	    <description>Display the currently playing song's rating on a 0 to 5 scale</description>
+    </key>
+    <key name="status-type" enum="org.gnome.shell.extensions.mediaplayer.status-type">
+    	<default>'icon'</default>
+    	<summary>Indicator appearance</summary>
+    </key>
+    <key type="s" name="status-text">
+    	<default>''</default>
+    	<summary>The indicator status text</summary>
+    </key>
+    <key type="b" name="volumemenu">
+        <default>true</default>
+        <summary>Show the media player in the volume menu</summary>
+        <description>Whether to show the mediaplayer controls in the volume menu.</description>
     </key>
   </schema>
 </schemalist>

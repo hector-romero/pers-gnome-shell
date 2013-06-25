@@ -22,118 +22,135 @@ const GLib = imports.gi.GLib;
 const Gio = imports.gi.Gio;
 const Lang = imports.lang;
 
-function TrackBox() {
-    this._init.apply(this, arguments);
-}
-
-TrackBox.prototype = {
-    __proto__: PopupMenu.PopupBaseMenuItem.prototype,
-
-    _init: function(cover) {
-        PopupMenu.PopupBaseMenuItem.prototype._init.call(this, {reactive: false});
-        this.box = new St.Table();
-        this._cover = cover;
-        this._infos = new St.Table({style_class: "track-infos"});
-        this.addActor(this.box, {span: -1, expand: true});
-        this.box.add(this._cover, {row: 0, col: 1, x_expand: false});
-        this.box.add(this._infos, {row: 0, col: 2, x_expand: true});
-    },
-
-    addInfo: function(item, row) {
-        this._infos.add(item, {row: row, col: 1, y_expand: false});
-    }
-}
-
-function ControlButtons() {
-    this._init.apply(this, arguments);
-}
-
-ControlButtons.prototype = {
-    __proto__: PopupMenu.PopupBaseMenuItem.prototype,
+const PlayerButtons = new Lang.Class({
+    Name: 'PlayerButtons',
+    Extends: PopupMenu.PopupBaseMenuItem,
 
     _init: function() {
-        PopupMenu.PopupBaseMenuItem.prototype._init.call(this, {reactive: false});
-        this.box = new St.BoxLayout();
+        this.parent({reactive: false});
+        this.box = new St.BoxLayout({style_class: 'controls'});
         this.addActor(this.box, {span: -1, align: St.Align.MIDDLE});
     },
     addButton: function(button) {
-        this.box.add_actor(button);
+        this.box.add_actor(button.actor);
     }
-}
+});
 
-function ControlButton() {
-    this._init.apply(this, arguments);
-}
+const PlayerButton = new Lang.Class({
+    Name: "PlayerButton",
 
-ControlButton.prototype = {
     _init: function(icon, callback) {
-        this.actor = new St.Bin({style_class: 'button-container'});
         this.icon = new St.Icon({
-            style_class: 'button-icon',
-            icon_type: St.IconType.SYMBOLIC,
-            icon_name: icon,
+            icon_name: icon + '-symbolic',
+            icon_size: 20
         });
-        this.button = new St.Button({style_class: 'hotplug-resident-eject-button',
-                                     child: this.icon});
-        this.button.connect('clicked', callback);
-        this.actor.add_actor(this.button);
+
+        this.actor = new St.Button({style_class: 'notification-icon-button control-button',
+                                    child: this.icon});
+        this.actor._delegate = this
+
+        this._callback_id = this.actor.connect('clicked', callback);
+
+        // override base style
+        this.icon.set_style('padding: 0px');
+        this.actor.set_style('padding: 8px');
     },
+
+    setCallback: function(callback) {
+        this.actor.disconnect(this._callback_id);
+        this._callback_id = this.actor.connect('clicked', callback);
+    },
+
     setIcon: function(icon) {
-        this.icon.icon_name = icon;
+        this.icon.icon_name = icon + '-symbolic';
     },
-    hide: function() {
-        this.actor.hide();
+
+    enable: function() {
+        this.actor.remove_style_pseudo_class('disabled');
+        this.actor.can_focus = true;
+        this.actor.reactive = true;
     },
+
+    disable: function() {
+        this.actor.add_style_pseudo_class('disabled');
+        this.actor.can_focus = false;
+        this.actor.reactive = false;
+    },
+
     show: function() {
         this.actor.show();
     },
-}
 
-function SliderItem() {
-    this._init.apply(this, arguments);
-}
+    hide: function() {
+        this.actor.hide();
+    }
+});
 
-SliderItem.prototype = {
-    __proto__: PopupMenu.PopupSliderMenuItem.prototype,
+const SliderItem = new Lang.Class({
+    Name: "SliderItem",
+    Extends: PopupMenu.PopupSliderMenuItem,
 
     _init: function(text, icon, value) {
-        PopupMenu.PopupSliderMenuItem.prototype._init.call(this, value);
+        this.parent(value);
+
         this.removeActor(this._slider);
-        this._holder = new St.Table({style_class: 'slider-item'});
-        this._icon = new St.Icon({style_class: 'menu-icon', icon_name: icon});
+        this._box = new St.Table({style_class: 'slider-item'});
+        this._icon = new St.Icon({style_class: 'menu-icon', icon_name: icon + '-symbolic'});
         this._label = new St.Label({text: text});
-        this._holder.add(this._icon, {row: 0, col: 0, x_expand: false})
-        this._holder.add(this._label, {row: 0, col: 1, x_expand: false})
-        this._holder.add(this._slider, {row: 0, col: 2, x_expand: true})
-        this.addActor(this._holder, {span: -1, expand: true});
+        this._box.add(this._icon, {row: 0, col: 0, x_expand: false})
+        this._box.add(this._label, {row: 0, col: 1, x_expand: false})
+        this._box.add(this._slider, {row: 0, col: 2, x_expand: true})
+
+        this.addActor(this._box, {span: -1, expand: true});
     },
 
     setIcon: function(icon) {
-        this._icon.icon_name = icon;
+        this._icon.icon_name = icon + '-symbolic';
     },
 
     setLabel: function(text) {
         if (this._label.clutter_text)
             this._label.text = text;
     }
-}
+});
 
-function TrackTitle() {
-    this._init.apply(this, arguments);
-}
+const TrackBox = new Lang.Class({
+    Name: "TrackBox",
+    Extends: PopupMenu.PopupBaseMenuItem,
 
-TrackTitle.prototype = {
+    _init: function(cover) {
+        this.parent({reactive: false});
+
+        this.box = new St.Table();
+        this._cover = cover;
+        this._infos = new St.Table({style_class: "track-infos"});
+        this.box.add(this._cover, {row: 0, col: 1, x_expand: false});
+        this.box.add(this._infos, {row: 0, col: 2, x_expand: true});
+
+        this.addActor(this.box, {span: -1, expand: true});
+    },
+
+    addInfo: function(item, row) {
+        this._infos.add(item.actor, {row: row, col: 1, y_expand: false});
+    }
+});
+
+const TrackTitle = new Lang.Class({
+    Name: "TrackTitle",
+
     _init: function(prepend, text, style) {
-        this.box = new St.Table({style_class: style});
+        this.actor = new St.Table({style_class: style});
+        this.actor._delegate = this;
+
         this._label = new St.Label();
         if (prepend) {
             this._prepend = new St.Label({style_class: 'popup-inactive-menu-item', text: prepend + " "});
             this._prepend.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-            this.box.add(this._prepend, {row: 0, col: 0, x_fill: true, x_expand: false});
-            this.box.add(this._label, {row: 0, col: 1});
+            this.actor.add(this._prepend, {row: 0, col: 0, x_fill: true, x_expand: false});
+            this.actor.add(this._label, {row: 0, col: 1});
         }
         else
-            this.box.add(this._label, {row: 0, col: 0});
+            this.actor.add(this._label, {row: 0, col: 0});
 
         this.setText(text);
     },
@@ -145,18 +162,19 @@ TrackTitle.prototype = {
             this._label.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
             this._label.clutter_text.set_text(text.toString());
         }
+    },
+
+    getText: function() {
+        return this._label.text;
     }
-}
+});
 
-function TitleItem() {
-    this._init.apply(this, arguments);
-}
-
-TitleItem.prototype = {
-    __proto__: PopupMenu.PopupBaseMenuItem.prototype,
+const TitleItem = new Lang.Class({
+    Name: "TitleItem",
+    Extends: PopupMenu.PopupBaseMenuItem,
 
     _init: function(text, icon, callback) {
-        PopupMenu.PopupBaseMenuItem.prototype._init.call(this);
+        this.parent();
 
         this.box = new St.BoxLayout();
         this.addActor(this.box);
@@ -165,8 +183,7 @@ TitleItem.prototype = {
         this.button = new St.Button({style_class: "button-quit"});
         this.button.connect('clicked', callback);
         this.button_icon = new St.Icon({
-            icon_type: St.IconType.SYMBOLIC,
-            icon_name: 'window-close',
+            icon_name: 'window-close-symbolic',
             icon_size: 16
         });
         this.button.set_child(this.button_icon);
@@ -175,32 +192,35 @@ TitleItem.prototype = {
         this.addActor(this.button, {span: -1, expand: true, align: St.Align.END});
         this.hideButton();
     },
+
     setLabel: function(text) {
         this.label.text = text;
     },
+
     setIcon: function(icon) {
         this.icon.set_child(icon);
     },
+
     hideButton: function() {
         this.button.hide();
     },
+
     showButton: function() {
         this.button.show();
     }
-}
+});
 
+const TrackRating = new Lang.Class({
+    Name: "TrackRating",
 
-function TrackRating() {
-    this._init.apply(this, arguments);
-}
-
-TrackRating.prototype = {
     _init: function(prepend, value, style, player) {
-        this.box = new St.BoxLayout({style_class: style});
+        this.actor = new St.BoxLayout({style_class: style});
+        this.actor._delegate = this;
+
         if (prepend) {
             this._prepend = new St.Label({style_class: 'popup-inactive-menu-item', text: prepend + ": "});
             this._prepend.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-            this.box.add(this._prepend);
+            this.actor.add(this._prepend);
         }
         // Reference to our player
         this._player = player;
@@ -219,14 +239,12 @@ TrackRating.prototype = {
             // Create starred icons
             this._starredIcon[i] = new St.Icon({style_class: 'star-icon',
                                                 icon_size: 16,
-                                                icon_type: St.IconType.SYMBOLIC,
-                                                icon_name: 'starred'
+                                                icon_name: 'starred-symbolic'
                                                });
             // Create non-starred icons
             this._nonStarredIcon[i] = new St.Icon({style_class: 'star-icon',
                                                    icon_size: 16,
-                                                   icon_type: St.IconType.SYMBOLIC,
-                                                   icon_name: 'non-starred'
+                                                   icon_name: 'non-starred-symbolic'
                                                   });
             // Create the button with starred icon
             this._starButton[i] = new St.Button({style_class: 'button-star',
@@ -240,13 +258,13 @@ TrackRating.prototype = {
             this._starButton[i].connect('clicked', Lang.bind(this, this.applyRating));
 
             // Put the button in the box
-            this.box.add(this._starButton[i]);
+            this.actor.add(this._starButton[i]);
         }
         this.showRating(this._value);
     },
 
     newRating: function(button) {
-        if (this._supported[this._player._busName]) {
+        if (this._supported[this._player.busName]) {
             if (button.hover)
                 this.showRating(button._rateValue);
             else
@@ -268,8 +286,8 @@ TrackRating.prototype = {
     applyRating: function(button) {
         // Apply the rating in the player
         let applied = false;
-        if (this._supported[this._player._busName]) {
-            let applyFunc = Lang.bind(this, this._supported[this._player._busName]);
+        if (this._supported[this._player.busName]) {
+            let applyFunc = Lang.bind(this, this._supported[this._player.busName]);
             applied = applyFunc(button._rateValue);
         }
         if (applied) {
@@ -303,25 +321,24 @@ TrackRating.prototype = {
     },
 
     destroy: function() {
-        this.box.destroy();
+        this.actor.destroy();
     },
-}
+});
 
-function PlaylistItem() {
-    this._init.apply(this, arguments);
-}
-
-PlaylistItem.prototype = {
-    __proto__: PopupMenu.PopupBaseMenuItem.prototype,
+const PlaylistItem = new Lang.Class({
+    Name: "PlaylistItem",
+    Extends: PopupMenu.PopupBaseMenuItem,
 
     _init: function (text, obj, icon) {
-        PopupMenu.PopupBaseMenuItem.prototype._init.call(this);
+        this.parent();
+
         this.obj = obj;
         this.box = new St.BoxLayout();
-        this.addActor(this.box);
         this.label = new St.Label({text: text});
-        this.icon = new St.Icon({style_class: 'menu-icon', icon_name: 'view-list'});
+        this.icon = new St.Icon({style_class: 'menu-icon', icon_name: 'view-list-symbolic'});
         this.box.add_actor(this.icon);
         this.box.add_actor(this.label);
+
+        this.addActor(this.box);
     }
-};
+});

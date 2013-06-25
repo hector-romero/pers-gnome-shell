@@ -34,6 +34,11 @@ const DBusIface = <interface name="org.freedesktop.DBus">
 const DBusProxy = Gio.DBusProxy.makeProxyWrapper(DBusIface);
 
 const PropertiesIface = <interface name="org.freedesktop.DBus.Properties">
+<method name="Get">
+    <arg type="s" direction="in" />
+    <arg type="s" direction="in" />
+    <arg type="v" direction="out" />
+</method>
 <signal name="PropertiesChanged">
     <arg type="s" direction="out" />
     <arg type="a{sv}" direction="out" />
@@ -63,6 +68,8 @@ const MediaServer2PlayerIface = <interface name="org.mpris.MediaPlayer2.Player">
     <arg type="o" direction="in" />
     <arg type="x" direction="in" />
 </method>
+<property name="CanPause" type="b" access="read" />
+<property name="CanSeek" type="b" access="read" />
 <property name="Metadata" type="a{sv}" access="read" />
 <property name="Volume" type="d" access="readwrite" />
 <property name="PlaybackStatus" type="s" access="read" />
@@ -95,22 +102,26 @@ function DBus() {
                          '/org/freedesktop/DBus');
 }
 
-function Properties(owner) {
-    return new PropertiesProxy(Gio.DBus.session, owner,
-                               '/org/mpris/MediaPlayer2');
+function Properties(owner, callback) {
+    new PropertiesProxy(Gio.DBus.session, owner,
+                        '/org/mpris/MediaPlayer2',
+                        callback);
 }
 
-function MediaServer2(owner) {
-    return new MediaServer2Proxy(Gio.DBus.session, owner,
-                                 '/org/mpris/MediaPlayer2');
+function MediaServer2(owner, callback) {
+    new MediaServer2Proxy(Gio.DBus.session, owner,
+                          '/org/mpris/MediaPlayer2',
+                          callback);
 }
 
-function MediaServer2Player(owner) {
-    return new MediaServer2PlayerProxy(Gio.DBus.session, owner,
-                                       '/org/mpris/MediaPlayer2');
+function MediaServer2Player(owner, callback) {
+    new MediaServer2PlayerProxy(Gio.DBus.session, owner,
+                                '/org/mpris/MediaPlayer2',
+                                callback);
 }
 
-function MediaServer2Playlists(owner) {
-    return new MediaServer2PlaylistsProxy(Gio.DBus.session, owner,
-                                          '/org/mpris/MediaPlayer2');
+function MediaServer2Playlists(owner, callback) {
+    new MediaServer2PlaylistsProxy(Gio.DBus.session, owner,
+                                   '/org/mpris/MediaPlayer2',
+                                   callback);
 }
