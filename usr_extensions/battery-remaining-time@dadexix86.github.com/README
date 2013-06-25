@@ -19,12 +19,15 @@ while), by mail to
 All the settings are now update to gsettings and are 
 configurable via the gnome-shell-extension-prefs.
 
-They are 6.
+They are 7.
 _Show the arrow_
 If true show the arrow near the text when charging. (default: ON)
 
 _Show the percentage_
-If true show the percentage near the time. (default: ON)
+If true show the percentage near the icon. (default: ON)
+
+_Show the time_
+If true show the time near the percentage. (default: ON)
 
 _Show when charging._
 If true show the remaining time when charging. (default: ON)

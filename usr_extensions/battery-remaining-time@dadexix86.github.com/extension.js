@@ -36,6 +36,7 @@ function init() {
 const SETTING_SHOW_ICON='showicon';
 const SETTING_SHOW_ARROW_ON_CHARGE='showarrowoncharge';
 const SETTING_SHOW_PERCENTAGE='showpercentage';
+const SETTING_SHOW_TIME='showtime';
 const SETTING_SHOW_ON_CHARGE='showoncharge';
 const SETTING_SHOW_ON_FULL='showonfull';
 const SETTING_DEBUG='debug';
@@ -49,7 +50,7 @@ function monkeypatch(batteryArea) {
     // icon with the combo icon/label(s); this is dynamically called the first time
     // a battery is found in the _updateLabel() method
     
-    let showIcon, showArrowOnCharge, showPercentage, showOnCharge, showOnFull;
+    let showIcon, showArrowOnCharge, showPercentage, showOnCharge, showTime, showOnFull;
     
     batteryArea._setParameters = function setParameters(){
         if (debug){
@@ -58,6 +59,7 @@ function monkeypatch(batteryArea) {
         showIcon = Convenience.getSettings().get_boolean(SETTING_SHOW_ICON);
         showArrowOnCharge = Convenience.getSettings().get_boolean(SETTING_SHOW_ARROW_ON_CHARGE);
         showPercentage = Convenience.getSettings().get_boolean(SETTING_SHOW_PERCENTAGE);
+        showTime = Convenience.getSettings().get_boolean(SETTING_SHOW_TIME);
         showOnCharge = Convenience.getSettings().get_boolean(SETTING_SHOW_ON_CHARGE);
         showOnFull = Convenience.getSettings().get_boolean(SETTING_SHOW_ON_FULL);
     }
@@ -128,22 +130,30 @@ function monkeypatch(batteryArea) {
             totalTime = -1;
             
             [results]=devices;
+            if(debug){
+                global.log("devices = " + devices.toString());
+            }
             
             for (let i = 0; i < results.length; i++) {
                 let [device_id, device_type, icon, percent, charging, seconds] = results[i];
+                
+                if(debug){
+                    global.log("results[" + i.toString() + "] = " + results[i].toString());
+                }
+                
                 if (device_type != Status.power.UPDeviceType.BATTERY)
                     continue;
 
                 if (totalTime < 0){
                     totalTime = seconds;
-                    totalPercentage = Math.floor(percent);
+                    totalPercentage = Math.round(percent);
                     totalCharging = charging;
                     if(debug){
                         global.log("first battery");
                     }
                 } else {// If there is more than one battery we sum up
                     totalTime = totalTime + seconds;
-                    totalPercentage = Math.floor(totalPercentage + Math.floor(percent))/2;
+                    totalPercentage = Math.round((totalPercentage + percent)/2);
                     totalCharging = Math.min(totalCharging, charging);
                     if(debug){
                         global.log("more than one battery");
@@ -183,10 +193,11 @@ function monkeypatch(batteryArea) {
                 if(!showOnCharge)
                     hideBattery();
                 else{
+                    this.displayString = arrow;
                     if (showPercentage)
-                        this.displayString = arrow + totalMatch[1].toString() + '% (' + this.timeString + ')';
-                    else
-                        this.displayString = arrow + this.timeString;
+                        this.displayString = this.displayString + totalMatch[1].toString() + '%';
+                    if (showTime)
+                        this.displayString = this.displayString + ' (' + this.timeString + ')';
                     showBattery();
                 }
             } else {
@@ -195,18 +206,19 @@ function monkeypatch(batteryArea) {
                         hideBattery();
                     else {
                         this.timeString = decodeURIComponent(escape('∞'));
-
+                        this.displayString = ' ';
                         if (showPercentage)
-                            this.displayString = '100% (' + this.timeString + ')';
-                        else
-                            this.displayString = ' ' + this.timeString;
+                            this.displayString = this.displayString + '100%';
+                        if (showTime)
+                            this.displayString = this.displayString + ' (' + this.timeString + ')';
                         showBattery();
                     }
                 } else {
+                    this.displayString = ' ';
                     if (showPercentage)
-                        this.displayString = ' ' + totalMatch[1].toString() + '% (' + this.timeString + ')';
-                    else
-                        this.displayString = ' ' + this.timeString;
+                        this.displayString = this.displayString + totalMatch[1].toString() + '%';
+                    if (showTime)
+                        this.displayString = this.displayString + ' (' + this.timeString + ')';
                 }
             }
             

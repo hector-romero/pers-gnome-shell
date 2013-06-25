@@ -70,6 +70,10 @@ function init() {
       label: _("Show the percentage."),
       help: _("Show or hide the percentage near the time. (default: ON)")
     },
+    showtime: {
+      label: _("Show the time."),
+      help: _("Show or hide the time near the icon. (default: ON)")
+    },
     showoncharge: {
       label: _("Show when charging."),
       help: _("Show or hide at all when charging. (default: ON)")
