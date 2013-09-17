@@ -77,6 +77,7 @@ const AltTabPopupW = new Lang.Class({
 
         this.actor.opacity = 0;
         this.actor.show();
+	
         Tweener.addTween(this.actor,
                          { opacity: 255,
                            time: POPUP_FADE_TIME,
@@ -152,6 +153,15 @@ const AltTabPopupW = new Lang.Class({
         }
 
         return true;
+    },
+
+    destroy : function() {
+	if(this._appSwitcher.previewActor)
+	{
+		this._appSwitcher.previewActor.destroy();
+		this._appSwitcher.previewActor=undefined;
+	}
+	AltTab.AltTabPopup.prototype.destroy.call(this);
     },
 
     _keyReleaseEvent : function(actor, event) {
@@ -256,12 +266,12 @@ AppIcon.prototype = {
 	        this.icon = this.app.create_icon_texture(size);
         } else {
 	        let mutterWindow = this.cachedWindows[0].get_compositor_private();
-            if (!mutterWindow)
-                return;
-        	let windowTexture = mutterWindow.get_texture ();
-            let [width, height] = windowTexture.get_size();
-            let scale = Math.min(1.0, size / width, size / height);
-            this.icon = new Clutter.Clone ({ source: windowTexture,
+		if (!mutterWindow)
+                	return;
+		let windowTexture = mutterWindow.get_texture ();
+		let [width, height] = windowTexture.get_size();
+		let scale = Math.min(1.0, size / width, size / height);
+		this.icon = new Clutter.Clone ({ source: windowTexture,
                                                 reactive: true,
                                                 width: width * scale,
                                                 height: height * scale });
@@ -339,7 +349,25 @@ WindowSwitcher.prototype = {
             this._scrollToLeft();
         if(Schema.get_enum("preview-mode") == 1) {
         	let app = this.icons[index];
-        	Main.activateWindow(app.cachedWindows[0]);
+		if(this.previewActor) {
+			this.previewActor.destroy();
+			this.previewActor=undefined;
+		}
+		let mutterWindow = app.cachedWindows[0].get_compositor_private();
+		if (!mutterWindow)
+		return;
+		let windowTexture = mutterWindow.get_texture (); 
+		let [width, height] = windowTexture.get_size();
+		let [posX, posY] = windowTexture.get_transformed_position();
+		var preview = new Clutter.Clone ({ source: windowTexture,
+						reactive: true,
+						width: width,
+						height: height}); 
+		this.previewActor = new St.Widget({name:'altTabWindowPreview',x:posX,y:posY,width:width,height:height,reactive:false});
+		this.previewActor.add_actor(preview);
+		
+		Main.uiGroup.add_actor(this.previewActor);
+		this._altTabPopup.actor.raise_top();
         }
     },
 
