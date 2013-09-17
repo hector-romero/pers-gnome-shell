@@ -110,6 +110,28 @@ const DateMenuButton = new Lang.Class({
             item.actor.reparent(vbox);
         }
 
+//        if (params.showEvents) {
+//            // Add vertical separator
+//
+//            item = new St.DrawingArea({ style_class: 'calendar-vertical-separator',
+//                                        pseudo_class: 'highlighted' });
+//            item.connect('repaint', Lang.bind(this, _onVertSepRepaint));
+//            hbox.add(item);
+//
+//            // Fill up the second column
+//            vbox = new St.BoxLayout({name:     'calendarEventsArea',
+//                                     vertical: true});
+//            hbox.add(vbox, { expand: true });
+//
+//            // Event list
+//            vbox.add(this._eventList.actor, { expand: true });
+//
+//            item = new PopupMenu.PopupMenuItem(_("Open Calendar"));
+//            item.connect('activate', Lang.bind(this, this._onOpenCalendarActivate));
+//            item.actor.can_focus = false;
+//            vbox.add(item.actor, {y_align: St.Align.END, expand: true, y_fill: false});
+//        }
+//
         // Whenever the menu is opened, select today
         this.menu.connect('open-state-changed', Lang.bind(this, function(menu, isOpen) {
             if (isOpen) {

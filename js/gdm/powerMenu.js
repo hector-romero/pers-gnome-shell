@@ -18,6 +18,7 @@
  * 02111-1307, USA.
  */
 
+const Gio = imports.gi.Gio;
 const Lang = imports.lang;
 const UPowerGlib = imports.gi.UPowerGlib;
 
@@ -26,6 +27,8 @@ const Systemd = imports.gdm.systemd;
 
 const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
+
+const _LOGIN_SCREEN_SCHEMA = 'org.gnome.login-screen';
 
 const PowerMenuButton = new Lang.Class({
     Name: 'PowerMenuButton',
@@ -39,6 +42,12 @@ const PowerMenuButton = new Lang.Class({
             this._systemdLoginManager = new Systemd.SystemdLoginManager();
         else
             this._consoleKitManager = new ConsoleKit.ConsoleKitManager();
+
+        if (Gio.Settings.list_schemas().indexOf(_LOGIN_SCREEN_SCHEMA) != -1) {
+            this._settings = new Gio.Settings({ schema: _LOGIN_SCREEN_SCHEMA });
+            this._settings.connect('changed::disable-restart-buttons',
+                                   Lang.bind(this, this._updateVisibility));
+        }
 
         this._createSubMenu();
 
@@ -59,8 +68,16 @@ const PowerMenuButton = new Lang.Class({
         this._updateHaveRestart();
     },
 
+    _hasDisableRestartButtons: function() {
+        if (this._settings)
+            return this._settings.get_boolean('disable-restart-buttons');
+        else
+            return false;
+    },
+
     _updateVisibility: function() {
-        if (!this._haveSuspend && !this._haveShutdown && !this._haveRestart)
+        if ((!this._haveSuspend && !this._haveShutdown && !this._haveRestart)
+            || this._hasDisableRestartButtons())
             this.actor.hide();
         else
             this.actor.show();
