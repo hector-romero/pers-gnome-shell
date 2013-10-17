@@ -11,7 +11,6 @@ const Shell = imports.gi.Shell;
 const Gdk = imports.gi.Gdk;
 
 const AppDisplay = imports.ui.appDisplay;
-//const ContactDisplay = imports.ui.contactDisplay;
 const Dash = imports.ui.dash;
 const DND = imports.ui.dnd;
 const Lightbox = imports.ui.lightbox;
@@ -210,7 +209,6 @@ const Overview = new Lang.Class({
         this.addSearchProvider(new AppDisplay.AppSearchProvider());
         this.addSearchProvider(new AppDisplay.SettingsSearchProvider());
         this.addSearchProvider(new PlaceDisplay.PlaceSearchProvider());
-        //this.addSearchProvider(new ContactDisplay.ContactSearchProvider());
 
         // Load remote search providers provided by applications
         RemoteSearch.loadRemoteSearchProviders(Lang.bind(this, this.addSearchProvider));

@@ -37,6 +37,10 @@ msgstr ""
 msgid "Both"
 msgstr ""
 
+#: prefs.js:29
+msgid "Show/Hide"
+msgstr ""
+
 #: prefs.js:30
 msgid "Notifications"
 msgstr ""
