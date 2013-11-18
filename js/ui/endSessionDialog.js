@@ -19,6 +19,7 @@
  */
 
 const Lang = imports.lang;
+const Mainloop = imports.mainloop;
 const Signals = imports.signals;
 
 const AccountsService = imports.gi.AccountsService;
@@ -31,10 +32,10 @@ const St = imports.gi.St;
 const Shell = imports.gi.Shell;
 
 const GnomeSession = imports.misc.gnomeSession;
-const Lightbox = imports.ui.lightbox;
 const Main = imports.ui.main;
 const ModalDialog = imports.ui.modalDialog;
 const Tweener = imports.ui.tweener;
+const UserMenu = imports.ui.userMenu;
 
 let _endSessionDialog = null;
 
@@ -50,6 +51,7 @@ const EndSessionDialogIface = <interface name="org.gnome.SessionManager.EndSessi
     <arg type="u" direction="in" />
     <arg type="ao" direction="in" />
 </method>
+<method name="Close" />
 <signal name="ConfirmedLogout" />
 <signal name="ConfirmedReboot" />
 <signal name="ConfirmedShutdown" />
@@ -90,7 +92,7 @@ const shutdownDialogContent = {
                        label:  C_("button", "Restart") },
                      { signal: 'ConfirmedShutdown',
                        label:  C_("button", "Power Off") }],
-    iconName: 'system-shutdown',
+    iconName: 'system-shutdown-symbolic',
     iconStyleClass: 'end-session-dialog-shutdown-icon'
 };
 
@@ -105,7 +107,7 @@ const restartDialogContent = {
     endDescription: _("Restarting the system."),
     confirmButtons: [{ signal: 'ConfirmedReboot',
                        label:  C_("button", "Restart") }],
-    iconName: 'system-shutdown',
+    iconName: 'view-refresh-symbolic',
     iconStyleClass: 'end-session-dialog-shutdown-icon'
 };
 
@@ -161,6 +163,7 @@ const ListItem = new Lang.Class({
 
         this._descriptionLabel = new St.Label({ text:        this._reason,
                                                 style_class: 'end-session-dialog-app-list-item-description' });
+        this.actor.label_actor = this._nameLabel;
         textLayout.add(this._descriptionLabel,
                        { expand: true,
                          x_fill: true });
@@ -222,7 +225,8 @@ const EndSessionDialog = new Lang.Class({
     Extends: ModalDialog.ModalDialog,
 
     _init: function() {
-        this.parent({ styleClass: 'end-session-dialog' });
+        this.parent({ styleClass: 'end-session-dialog',
+                      destroyOnClose: false });
 
         this._user = AccountsService.UserManager.get_default().get_user(GLib.get_user_name());
 
@@ -280,21 +284,17 @@ const EndSessionDialog = new Lang.Class({
         scrollView.hide();
 
         this._applicationList = new St.BoxLayout({ vertical: true });
-        scrollView.add_actor(this._applicationList,
-                             { x_fill:  true,
-                               y_fill:  true,
-                               x_align: St.Align.START,
-                               y_align: St.Align.MIDDLE });
+        scrollView.add_actor(this._applicationList);
 
         this._applicationList.connect('actor-added',
                                       Lang.bind(this, function() {
-                                          if (this._applicationList.get_children().length == 1)
+                                          if (this._applicationList.get_n_children() == 1)
                                               scrollView.show();
                                       }));
 
         this._applicationList.connect('actor-removed',
                                       Lang.bind(this, function() {
-                                          if (this._applicationList.get_children().length == 0)
+                                          if (this._applicationList.get_n_children() == 0)
                                               scrollView.hide();
                                       }));
 
@@ -307,42 +307,7 @@ const EndSessionDialog = new Lang.Class({
         this._user.disconnect(this._userChangedId);
     },
 
-    _setIconFromFile: function(iconFile, styleClass) {
-        if (styleClass)
-            this._iconBin.set_style_class_name(styleClass);
-        this._iconBin.set_style(null);
-
-        this._iconBin.child = null;
-        if (iconFile) {
-            this._iconBin.show();
-            this._iconBin.set_style('background-image: url("' + iconFile + '");' +
-                                    'background-size: contain;');
-        } else {
-            this._iconBin.hide();
-        }
-    },
-
-    _setIconFromName: function(iconName, styleClass) {
-        if (styleClass)
-            this._iconBin.set_style_class_name(styleClass);
-        this._iconBin.set_style(null);
-
-        if (iconName != null) {
-            let textureCache = St.TextureCache.get_default();
-            let icon = textureCache.load_icon_name(this._iconBin.get_theme_node(),
-                                                   iconName,
-                                                   St.IconType.SYMBOLIC,
-                                                   _DIALOG_ICON_SIZE);
-
-            this._iconBin.child = icon;
-            this._iconBin.show();
-        } else {
-            this._iconBin.child = null;
-            this._iconBin.hide();
-        }
-    },
-
-    _updateContent: function() {
+    _updateDescription: function() {
         if (this.state != ModalDialog.State.OPENING &&
             this.state != ModalDialog.State.OPENED)
             return;
@@ -351,17 +316,6 @@ const EndSessionDialog = new Lang.Class({
 
         let subject = dialogContent.subject;
         let description;
-
-        if (this._user.is_loaded && !dialogContent.iconName) {
-            let iconFile = this._user.get_icon_file();
-            if (GLib.file_test(iconFile, GLib.FileTest.EXISTS))
-                this._setIconFromFile(iconFile, dialogContent.iconStyleClass);
-            else
-                this._setIconFromName('avatar-default', dialogContent.iconStyleClass);
-        } else if (dialogContent.iconName) {
-            this._setIconFromName(dialogContent.iconName,
-                                  dialogContent.iconStyleClass);
-        }
 
         if (this._inhibitors.length > 0) {
             this._stopTimer();
@@ -395,6 +349,27 @@ const EndSessionDialog = new Lang.Class({
         _setLabelText(this._descriptionLabel, description);
     },
 
+    _updateContent: function() {
+        if (this.state != ModalDialog.State.OPENING &&
+            this.state != ModalDialog.State.OPENED)
+            return;
+
+        let dialogContent = DialogContent[this._type];
+        if (dialogContent.iconName) {
+            this._iconBin.child = new St.Icon({ icon_name: dialogContent.iconName,
+                                                icon_size: _DIALOG_ICON_SIZE,
+                                                style_class: dialogContent.iconStyleClass });
+        } else {
+            let avatarWidget = new UserMenu.UserAvatarWidget(this._user,
+                                                             { iconSize: _DIALOG_ICON_SIZE,
+                                                               styleClass: dialogContent.iconStyleClass });
+            this._iconBin.child = avatarWidget.actor;
+            avatarWidget.update();
+        }
+
+        this._updateDescription();
+    },
+
     _updateButtons: function() {
         let dialogContent = DialogContent[this._type];
         let buttons = [{ action: Lang.bind(this, this.cancel),
@@ -405,7 +380,12 @@ const EndSessionDialog = new Lang.Class({
             let signal = dialogContent.confirmButtons[i].signal;
             let label = dialogContent.confirmButtons[i].label;
             buttons.push({ action: Lang.bind(this, function() {
-                                       this._confirm(signal);
+                                       this.close(true);
+                                       let signalId = this.connect('closed',
+                                                                   Lang.bind(this, function() {
+                                                                       this.disconnect(signalId);
+                                                                       this._confirm(signal);
+                                                                   }));
                                    }),
                            label: label });
         }
@@ -413,15 +393,17 @@ const EndSessionDialog = new Lang.Class({
         this.setButtons(buttons);
     },
 
-    close: function() {
+    close: function(skipSignal) {
         this.parent();
-        this._dbusImpl.emit_signal('Closed', null);
+
+        if (!skipSignal)
+            this._dbusImpl.emit_signal('Closed', null);
     },
 
     cancel: function() {
         this._stopTimer();
         this._dbusImpl.emit_signal('Canceled', null);
-        this.close(global.get_current_time());
+        this.close();
     },
 
     _confirm: function(signal) {
@@ -436,22 +418,35 @@ const EndSessionDialog = new Lang.Class({
     },
 
     _startTimer: function() {
+        let startTime = GLib.get_monotonic_time();
         this._secondsLeft = this._totalSecondsToStayOpen;
-        Tweener.addTween(this,
-                         { _secondsLeft: 0,
-                           time: this._secondsLeft,
-                           transition: 'linear',
-                           onUpdate: Lang.bind(this, this._updateContent),
-                           onComplete: Lang.bind(this, function() {
-                                           let dialogContent = DialogContent[this._type];
-                                           let button = dialogContent.confirmButtons[dialogContent.confirmButtons.length - 1];
-                                           this._confirm(button.signal);
-                                       }),
-                         });
+        this._updateDescription();
+
+        this._timerId = Mainloop.timeout_add_seconds(1, Lang.bind(this,
+            function() {
+                let currentTime = GLib.get_monotonic_time();
+                let secondsElapsed = ((currentTime - startTime) / 1000000);
+
+                this._secondsLeft = this._totalSecondsToStayOpen - secondsElapsed;
+                if (this._secondsLeft > 0) {
+                    this._updateDescription();
+                    return true;
+                }
+
+                let dialogContent = DialogContent[this._type];
+                let button = dialogContent.confirmButtons[dialogContent.confirmButtons.length - 1];
+                this._confirm(button.signal);
+
+                return false;
+            }));
     },
 
     _stopTimer: function() {
-        Tweener.removeTweens(this);
+        if (this._timerId != 0) {
+            Mainloop.source_remove(this._timerId);
+            this._timerId = 0;
+        }
+
         this._secondsLeft = 0;
     },
 
@@ -468,7 +463,7 @@ const EndSessionDialog = new Lang.Class({
             let item = new ListItem(app, reason);
             item.connect('activate',
                          Lang.bind(this, function() {
-                             this.close(global.get_current_time());
+                             this.close();
                          }));
             this._applicationList.add(item.actor, { x_fill: true });
             this._stopTimer();
@@ -516,5 +511,9 @@ const EndSessionDialog = new Lang.Class({
                                         invocation.return_value(null);
                                         this.disconnect(signalId);
                                     }));
+    },
+
+    Close: function(parameters, invocation) {
+        this.close();
     }
 });

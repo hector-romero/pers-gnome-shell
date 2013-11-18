@@ -1,6 +1,7 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
 const Clutter = imports.gi.Clutter;
+const Gio = imports.gi.Gio;
 const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 const Shell = imports.gi.Shell;
@@ -19,6 +20,10 @@ const ButtonBox = new Lang.Class({
         params = Params.parse(params, { style_class: 'panel-button' }, true);
         this.actor = new Shell.GenericContainer(params);
         this.actor._delegate = this;
+
+        this.container = new St.Bin({ y_fill: true,
+                                      x_fill: true,
+                                      child: this.actor });
 
         this.actor.connect('get-preferred-width', Lang.bind(this, this._getPreferredWidth));
         this.actor.connect('get-preferred-height', Lang.bind(this, this._getPreferredHeight));
@@ -107,11 +112,17 @@ const Button = new Lang.Class({
         this.actor.connect('key-press-event', Lang.bind(this, this._onSourceKeyPress));
 
         if (dontCreateMenu)
-            this.menu = null;
+            this.menu = new PopupMenu.PopupDummyMenu(this.actor);
         else
             this.setMenu(new PopupMenu.PopupMenu(this.actor, menuAlignment, St.Side.TOP, 0));
 
         this.setName(nameText);
+    },
+
+    setSensitive: function(sensitive) {
+        this.actor.reactive = sensitive;
+        this.actor.can_focus = sensitive;
+        this.actor.track_hover = sensitive;
     },
 
     setName: function(text) {
@@ -175,8 +186,7 @@ const Button = new Lang.Class({
     _onMenuKeyPress: function(actor, event) {
         let symbol = event.get_key_symbol();
         if (symbol == Clutter.KEY_Left || symbol == Clutter.KEY_Right) {
-            let focusManager = St.FocusManager.get_for_stage(global.stage);
-            let group = focusManager.get_group(this.actor);
+            let group = global.focus_manager.get_group(this.actor);
             if (group) {
                 let direction = (symbol == Clutter.KEY_Left) ? Gtk.DirectionType.LEFT : Gtk.DirectionType.RIGHT;
                 group.navigate_focus(this.actor, direction, false);
@@ -195,16 +205,15 @@ const Button = new Lang.Class({
         // Setting the max-height won't do any good if the minimum height of the
         // menu is higher then the screen; it's useful if part of the menu is
         // scrollable so the minimum height is smaller than the natural height
-        let monitor = Main.layoutManager.primaryMonitor;
-        this.menu.actor.style = ('max-height: ' +
-                                 Math.round(monitor.height - Main.panel.actor.height) +
-                                 'px;');
+        let workArea = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
+        this.menu.actor.style = ('max-height: ' + Math.round(workArea.height) + 'px;');
     },
 
     destroy: function() {
         this.actor._delegate = null;
 
-        this.menu.destroy();
+        if (this.menu)
+            this.menu.destroy();
         this.actor.destroy();
 
         this.emit('destroy');
@@ -224,19 +233,39 @@ const SystemStatusButton = new Lang.Class({
 
     _init: function(iconName, nameText) {
         this.parent(0.0, nameText);
-
-        this._iconActor = new St.Icon({ icon_name: iconName,
-                                        icon_type: St.IconType.SYMBOLIC,
-                                        style_class: 'system-status-icon' });
-        this.actor.add_actor(this._iconActor);
         this.actor.add_style_class_name('panel-status-button');
+
+        this._box = new St.BoxLayout({ style_class: 'panel-status-button-box' });
+        this.actor.add_actor(this._box);
+
+        if (iconName)
+            this.setIcon(iconName);
+    },
+
+    get icons() {
+        return this._box.get_children();
+    },
+
+    addIcon: function(gicon) {
+        let icon = new St.Icon({ gicon: gicon,
+                                 style_class: 'system-status-icon' });
+        this._box.add_actor(icon);
+
+        this.emit('icons-changed');
+
+        return icon;
     },
 
     setIcon: function(iconName) {
-        this._iconActor.icon_name = iconName;
+        if (!this.mainIcon)
+            this.mainIcon = this.addIcon(null);
+        this.mainIcon.icon_name = iconName;
     },
 
     setGIcon: function(gicon) {
-        this._iconActor.gicon = gicon;
+        if (this.mainIcon)
+            this.mainIcon.gicon = gicon;
+        else
+            this.mainIcon = this.addIcon(gicon);
     }
 });

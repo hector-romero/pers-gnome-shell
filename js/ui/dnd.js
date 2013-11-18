@@ -85,11 +85,13 @@ const _Draggable = new Lang.Class({
 
         this.actor.connect('destroy', Lang.bind(this, function() {
             this._actorDestroyed = true;
+
             // If the drag actor is destroyed and we were going to fix
             // up its hover state, fix up the parent hover state instead
             if (this.actor == this._firstLeaveActor)
                 this._firstLeaveActor = this._dragOrigParent;
-            if (this._dragInProgress)
+
+            if (this._dragInProgress && this._dragCancellable)
                 this._cancelDrag(global.get_current_time());
             this.disconnectAll();
         }));
@@ -102,6 +104,7 @@ const _Draggable = new Lang.Class({
         this._buttonDown = false; // The mouse button has been pressed and has not yet been released.
         this._dragInProgress = false; // The drag has been started, and has not been dropped or cancelled yet.
         this._animationInProgress = false; // The drag is over and the item is in the process of animating to its original position (snapping back or reverting).
+        this._dragCancellable = true;
 
         // During the drag, we eat enter/leave events so that actors don't prelight.
         // But we remember the actors that we first left/last entered so we can
@@ -136,25 +139,26 @@ const _Draggable = new Lang.Class({
     },
 
     _ungrabActor: function() {
-        Clutter.ungrab_pointer();
         if (!this._onEventId)
             return;
+
+        Clutter.ungrab_pointer();
         this.actor.disconnect(this._onEventId);
         this._onEventId = null;
     },
 
     _grabEvents: function() {
         if (!this._eventsGrabbed) {
-            Clutter.grab_pointer(_getEventHandlerActor());
-            Clutter.grab_keyboard(_getEventHandlerActor());
-            this._eventsGrabbed = true;
+            this._eventsGrabbed = Main.pushModal(_getEventHandlerActor());
+            if (this._eventsGrabbed)
+                Clutter.grab_pointer(_getEventHandlerActor());
         }
     },
 
     _ungrabEvents: function() {
         if (this._eventsGrabbed) {
             Clutter.ungrab_pointer();
-            Clutter.ungrab_keyboard();
+            Main.popModal(_getEventHandlerActor());
             this._eventsGrabbed = false;
         }
     },
@@ -204,6 +208,19 @@ const _Draggable = new Lang.Class({
     },
 
     /**
+     * fakeRelease:
+     *
+     * Fake a release event.
+     * Must be called if you want to intercept release events on draggable
+     * actors for other purposes (for example if you're using
+     * PopupMenu.ignoreRelease())
+     */
+    fakeRelease: function() {
+        this._buttonDown = false;
+        this._ungrabActor();
+    },
+
+    /**
      * startDrag:
      * @stageX: X coordinate of event
      * @stageY: Y coordinate of event
@@ -234,7 +251,11 @@ const _Draggable = new Lang.Class({
         this._dragY = this._dragStartY = stageY;
 
         if (this.actor._delegate && this.actor._delegate.getDragActor) {
-            this._dragActor = this.actor._delegate.getDragActor(this._dragStartX, this._dragStartY);
+            this._dragActor = this.actor._delegate.getDragActor();
+            this._dragActor.reparent(Main.uiGroup);
+            this._dragActor.raise_top();
+            Shell.util_set_hidden_from_pick(this._dragActor, true);
+
             // Drag actor does not always have to be the same as actor. For example drag actor
             // can be an image that's part of the actor. So to perform "snap back" correctly we need
             // to know what was the drag actor source.
@@ -263,26 +284,27 @@ const _Draggable = new Lang.Class({
             this._dragOffsetY = this._dragActor.y - this._dragStartY;
         } else {
             this._dragActor = this.actor;
+
             this._dragActorSource = undefined;
             this._dragOrigParent = this.actor.get_parent();
             this._dragOrigX = this._dragActor.x;
             this._dragOrigY = this._dragActor.y;
             this._dragOrigScale = this._dragActor.scale_x;
 
+            // Set the actor's scale such that it will keep the same
+            // transformed size when it's reparented to the uiGroup
+            let [scaledWidth, scaledHeight] = this.actor.get_transformed_size();
+            this._dragActor.set_scale(scaledWidth / this.actor.width,
+                                      scaledHeight / this.actor.height);
+
             let [actorStageX, actorStageY] = this.actor.get_transformed_position();
             this._dragOffsetX = actorStageX - this._dragStartX;
             this._dragOffsetY = actorStageY - this._dragStartY;
 
-            // Set the actor's scale such that it will keep the same
-            // transformed size when it's reparented to the uiGroup
-            let [scaledWidth, scaledHeight] = this.actor.get_transformed_size();
-            this.actor.set_scale(scaledWidth / this.actor.width,
-                                 scaledHeight / this.actor.height);
+            this._dragActor.reparent(Main.uiGroup);
+            this._dragActor.raise_top();
+            Shell.util_set_hidden_from_pick(this._dragActor, true);
         }
-
-        this._dragActor.reparent(Main.uiGroup);
-        this._dragActor.raise_top();
-        Shell.util_set_hidden_from_pick(this._dragActor, true);
 
         this._dragOrigOpacity = this._dragActor.opacity;
         if (this._dragActorOpacity != undefined)
@@ -420,6 +442,11 @@ const _Draggable = new Lang.Class({
                 }
         }
 
+        // At this point it is too late to cancel a drag by destroying
+        // the actor, the fate of which is decided by acceptDrop and its
+        // side-effects
+        this._dragCancellable = false;
+
         while (target) {
             if (target._delegate && target._delegate.acceptDrop) {
                 let [r, targX, targY] = target.transform_stage_point(dropX, dropY);
@@ -428,8 +455,6 @@ const _Draggable = new Lang.Class({
                                                 targX,
                                                 targY,
                                                 event.get_time())) {
-                    if (this._actorDestroyed)
-                        return true;
                     // If it accepted the drop without taking the actor,
                     // handle it ourselves.
                     if (this._dragActor.get_parent() == Main.uiGroup) {

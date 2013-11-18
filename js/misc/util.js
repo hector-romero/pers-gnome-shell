@@ -1,11 +1,13 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
-const Gdk = imports.gi.Gdk;
-const Gio = imports.gi.Gio;
+const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
-const Shell = imports.gi.Shell;
+const St = imports.gi.St;
 
 const Main = imports.ui.main;
+const Tweener = imports.ui.tweener;
+
+const SCROLL_TIME = 0.1;
 
 // http://daringfireball.net/2010/07/improved_regex_for_matching_urls
 const _balancedParens = '\\((?:[^\\s()<>]+|(?:\\(?:[^\\s()<>]+\\)))*\\)';
@@ -83,24 +85,33 @@ function spawnCommandLine(command_line) {
 // this will throw an error.
 function trySpawn(argv)
 {
+    var success, pid;
     try {
-        GLib.spawn_async(null, argv, null,
-                         GLib.SpawnFlags.SEARCH_PATH,
-                         null, null);
+        [success, pid] = GLib.spawn_async(null, argv, null,
+                                          GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+                                          null);
     } catch (err) {
-        if (err.code == GLib.SpawnError.G_SPAWN_ERROR_NOENT) {
-            err.message = _("Command not found");
-        } else {
+        /* Rewrite the error in case of ENOENT */
+        if (err.matches(GLib.SpawnError, GLib.SpawnError.NOENT)) {
+            throw new GLib.SpawnError({ code: GLib.SpawnError.NOENT,
+                                        message: _("Command not found") });
+        } else if (err instanceof GLib.Error) {
             // The exception from gjs contains an error string like:
             //   Error invoking GLib.spawn_command_line_async: Failed to
             //   execute child process "foo" (No such file or directory)
             // We are only interested in the part in the parentheses. (And
             // we can't pattern match the text, since it gets localized.)
-            err.message = err.message.replace(/.*\((.+)\)/, '$1');
+            let message = err.message.replace(/.*\((.+)\)/, '$1');
+            throw new (err.constructor)({ code: err.code,
+                                          message: message });
+        } else {
+            throw err;
         }
-
-        throw err;
     }
+    // Dummy child watch; we don't want to double-fork internally
+    // because then we lose the parent-child relationship, which
+    // can break polkit.  See https://bugzilla.redhat.com//show_bug.cgi?id=819275
+    GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, function () {}, null);
 }
 
 // trySpawnCommandLine:
@@ -144,93 +155,13 @@ function killall(processName) {
         // whatever...
 
         let argv = ['pkill', '-f', '^([^ ]*/)?' + processName + '($| )'];
-        GLib.spawn_sync(null, argv, null, GLib.SpawnFlags.SEARCH_PATH, null, null);
+        GLib.spawn_sync(null, argv, null, GLib.SpawnFlags.SEARCH_PATH, null);
         // It might be useful to return success/failure, but we'd need
         // a wrapper around WIFEXITED and WEXITSTATUS. Since none of
         // the current callers care, we don't bother.
     } catch (e) {
         logError(e, 'Failed to kill ' + processName);
     }
-}
-
-// This was ported from network-manager-applet
-// Copyright 2007 - 2011 Red Hat, Inc.
-// Author: Dan Williams <dcbw@redhat.com>
-
-const _IGNORED_WORDS = [
-        'Semiconductor',
-        'Components',
-        'Corporation',
-        'Communications',
-        'Company',
-        'Corp.',
-        'Corp',
-        'Co.',
-        'Inc.',
-        'Inc',
-        'Incorporated',
-        'Ltd.',
-        'Limited.',
-        'Intel',
-        'chipset',
-        'adapter',
-        '[hex]',
-        'NDIS',
-        'Module'
-];
-
-const _IGNORED_PHRASES = [
-        'Multiprotocol MAC/baseband processor',
-        'Wireless LAN Controller',
-        'Wireless LAN Adapter',
-        'Wireless Adapter',
-        'Network Connection',
-        'Wireless Cardbus Adapter',
-        'Wireless CardBus Adapter',
-        '54 Mbps Wireless PC Card',
-        'Wireless PC Card',
-        'Wireless PC',
-        'PC Card with XJACK(r) Antenna',
-        'Wireless cardbus',
-        'Wireless LAN PC Card',
-        'Technology Group Ltd.',
-        'Communication S.p.A.',
-        'Business Mobile Networks BV',
-        'Mobile Broadband Minicard Composite Device',
-        'Mobile Communications AB',
-        '(PC-Suite Mode)'
-];
-
-function fixupPCIDescription(desc) {
-    desc = desc.replace(/[_,]/, ' ');
-
-    /* Attempt to shorten ID by ignoring certain phrases */
-    for (let i = 0; i < _IGNORED_PHRASES.length; i++) {
-        let item = _IGNORED_PHRASES[i];
-        let pos = desc.indexOf(item);
-        if (pos != -1) {
-            let before = desc.substring(0, pos);
-            let after = desc.substring(pos + item.length, desc.length);
-            desc = before + after;
-        }
-    }
-
-    /* Attmept to shorten ID by ignoring certain individual words */
-    let words = desc.split(' ');
-    let out = [ ];
-    for (let i = 0; i < words.length; i++) {
-        let item = words[i];
-
-        // skip empty items (that come out from consecutive spaces)
-        if (item.length == 0)
-            continue;
-
-        if (_IGNORED_WORDS.indexOf(item) == -1) {
-            out.push(item);
-        }
-    }
-
-    return out.join(' ');
 }
 
 // lowerBound:
@@ -281,4 +212,64 @@ function insertSorted(array, val, cmp) {
     array.splice(pos, 0, val);
 
     return pos;
+}
+
+function makeCloseButton() {
+    let closeButton = new St.Button({ style_class: 'notification-close'});
+
+    // This is a bit tricky. St.Bin has its own x-align/y-align properties
+    // that compete with Clutter's properties. This should be fixed for
+    // Clutter 2.0. Since St.Bin doesn't define its own setters, the
+    // setters are a workaround to get Clutter's version.
+    closeButton.set_x_align(Clutter.ActorAlign.END);
+    closeButton.set_y_align(Clutter.ActorAlign.START);
+
+    // XXX Clutter 2.0 workaround: ClutterBinLayout needs expand
+    // to respect the alignments.
+    closeButton.set_x_expand(true);
+    closeButton.set_y_expand(true);
+
+    closeButton.connect('style-changed', function() {
+        let themeNode = closeButton.get_theme_node();
+        closeButton.translation_x = themeNode.get_length('-shell-close-overlap-x');
+        closeButton.translation_y = themeNode.get_length('-shell-close-overlap-y');
+    });
+
+    return closeButton;
+}
+
+function ensureActorVisibleInScrollView(scrollView, actor) {
+    let adjustment = scrollView.vscroll.adjustment;
+    let [value, lower, upper, stepIncrement, pageIncrement, pageSize] = adjustment.get_values();
+
+    let offset = 0;
+    let vfade = scrollView.get_effect("fade");
+    if (vfade)
+        offset = vfade.vfade_offset;
+
+    let box = actor.get_allocation_box();
+    let y1 = box.y1, y2 = box.y2;
+
+    let parent = actor.get_parent();
+    while (parent != scrollView) {
+        if (!parent)
+            throw new Error("actor not in scroll view");
+
+        let box = parent.get_allocation_box();
+        y1 += box.y1;
+        y2 += box.y1;
+        parent = parent.get_parent();
+    }
+
+    if (y1 < value + offset)
+        value = Math.max(0, y1 - offset);
+    else if (y2 > value + pageSize - offset)
+        value = Math.min(upper, y2 + offset - pageSize);
+    else
+        return;
+
+    Tweener.addTween(adjustment,
+                     { value: value,
+                       time: SCROLL_TIME,
+                       transition: 'easeOutQuad' });
 }

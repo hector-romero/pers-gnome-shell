@@ -1,6 +1,7 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
 const Clutter = imports.gi.Clutter;
+const Gio = imports.gi.Gio;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
 const Meta = imports.gi.Meta;
@@ -8,6 +9,7 @@ const Shell = imports.gi.Shell;
 const Signals = imports.signals;
 const St = imports.gi.St;
 
+const Background = imports.ui.background;
 const DND = imports.ui.dnd;
 const Main = imports.ui.main;
 const Tweener = imports.ui.tweener;
@@ -26,6 +28,8 @@ const SLIDE_ANIMATION_TIME = 0.2;
 const WORKSPACE_CUT_SIZE = 10;
 
 const WORKSPACE_KEEP_ALIVE_TIME = 100;
+
+const OVERRIDE_SCHEMA = 'org.gnome.shell.overrides';
 
 const WindowClone = new Lang.Class({
     Name: 'WindowClone',
@@ -58,12 +62,35 @@ const WindowClone = new Lang.Class({
         this.inDrag = false;
     },
 
+    // Find the actor just below us, respecting reparenting done
+    // by DND code
+    getActualStackAbove: function() {
+        if (this._stackAbove == null)
+            return null;
+
+        if (this.inDrag) {
+            if (this._stackAbove._delegate)
+                return this._stackAbove._delegate.getActualStackAbove();
+            else
+                return null;
+        } else {
+            return this._stackAbove;
+        }
+    },
+
     setStackAbove: function (actor) {
         this._stackAbove = actor;
-        if (this._stackAbove == null)
+
+        // Don't apply the new stacking now, it will be applied
+        // when dragging ends and window are stacked again
+        if (actor.inDrag)
+            return;
+
+        let actualAbove = this.getActualStackAbove();
+        if (actualAbove == null)
             this.actor.lower_bottom();
         else
-            this.actor.raise(this._stackAbove);
+            this.actor.raise(actualAbove);
     },
 
     destroy: function () {
@@ -162,18 +189,20 @@ const WorkspaceThumbnail = new Lang.Class({
                                      style_class: 'workspace-thumbnail' });
         this.actor._delegate = this;
 
-        this._contents = new Clutter.Group();
-        this.actor.add_actor(this._contents);
+        this._contents = new Clutter.Actor();
+        this.actor.add_child(this._contents);
 
         this.actor.connect('destroy', Lang.bind(this, this._onDestroy));
 
-        this._background = Meta.BackgroundActor.new_for_screen(global.screen);
-        this._contents.add_actor(this._background);
+        this._createBackground();
 
         let monitor = Main.layoutManager.primaryMonitor;
         this.setPorthole(monitor.x, monitor.y, monitor.width, monitor.height);
 
-        let windows = global.get_window_actors().filter(this._isWorkspaceWindow, this);
+        let windows = global.get_window_actors().filter(Lang.bind(this, function(actor) {
+            let win = actor.meta_window;
+            return win.located_on_workspace(metaWorkspace);
+        }));
 
         // Create clones for windows that should be visible in the Overview
         this._windows = [];
@@ -207,6 +236,12 @@ const WorkspaceThumbnail = new Lang.Class({
         this._collapseFraction = 0; // Not collapsed
     },
 
+    _createBackground: function() {
+        this._bgManager = new Background.BackgroundManager({ monitorIndex: Main.layoutManager.primaryIndex,
+                                                             container: this._contents,
+                                                             effects: Meta.BackgroundEffects.NONE });
+    },
+
     setPorthole: function(x, y, width, height) {
         this._portholeX = x;
         this._portholeY = y;
@@ -230,7 +265,7 @@ const WorkspaceThumbnail = new Lang.Class({
             let clone = this._windows[i];
             let metaWindow = clone.metaWindow;
             if (i == 0) {
-                clone.setStackAbove(this._background);
+                clone.setStackAbove(this._bgManager.background.actor);
             } else {
                 let previousClone = this._windows[i - 1];
                 clone.setStackAbove(previousClone.actor);
@@ -349,7 +384,8 @@ const WorkspaceThumbnail = new Lang.Class({
     },
 
     destroy : function() {
-        this.actor.destroy();
+        if (this.actor)
+          this.actor.destroy();
     },
 
     workspaceRemoved : function() {
@@ -370,19 +406,20 @@ const WorkspaceThumbnail = new Lang.Class({
     _onDestroy: function(actor) {
         this.workspaceRemoved();
 
+        if (this._bgManager) {
+          this._bgManager.destroy();
+          this._bgManager = null;
+        }
+
         this._windows = [];
         this.actor = null;
     },
 
-    // Tests if @win belongs to this workspace
-    _isWorkspaceWindow : function (win) {
-        return Main.isWindowActorDisplayedOnWorkspace(win, this.metaWorkspace.index());
-    },
-
-    // Tests if @win belongs to this workspace and monitor
-    _isMyWindow : function (win) {
-        return this._isWorkspaceWindow(win) &&
-            (!win.get_meta_window() || win.get_meta_window().get_monitor() == this.monitorIndex);
+    // Tests if @actor belongs to this workspace and monitor
+    _isMyWindow : function (actor) {
+        let win = actor.meta_window;
+        return win.located_on_workspace(this.metaWorkspace) &&
+            (win.get_monitor() == this.monitorIndex);
     },
 
     // Tests if @win should be shown in the Overview
@@ -415,7 +452,7 @@ const WorkspaceThumbnail = new Lang.Class({
         this._contents.add_actor(clone.actor);
 
         if (this._windows.length == 0)
-            clone.setStackAbove(this._background);
+            clone.setStackAbove(this._bgManager.background.actor);
         else
             clone.setStackAbove(this._windows[this._windows.length - 1].actor);
 
@@ -525,6 +562,7 @@ const ThumbnailsBox = new Lang.Class({
         this._dropPlaceholderPos = -1;
         this._dropPlaceholder = new St.Bin({ style_class: 'placeholder' });
         this.actor.add_actor(this._dropPlaceholder);
+        this._spliceIndex = -1;
 
         this._targetScale = 0;
         this._scale = 0;
@@ -542,6 +580,11 @@ const ThumbnailsBox = new Lang.Class({
         this.actor.connect('button-press-event', function() { return true; });
         this.actor.connect('button-release-event', Lang.bind(this, this._onButtonRelease));
 
+        Main.overview.connect('showing',
+                              Lang.bind(this, this._createThumbnails));
+        Main.overview.connect('hidden',
+                              Lang.bind(this, this._destroyThumbnails));
+
         Main.overview.connect('item-drag-begin',
                               Lang.bind(this, this._onDragBegin));
         Main.overview.connect('item-drag-end',
@@ -554,6 +597,16 @@ const ThumbnailsBox = new Lang.Class({
                               Lang.bind(this, this._onDragEnd));
         Main.overview.connect('window-drag-cancelled',
                               Lang.bind(this, this._onDragCancelled));
+
+        this._settings = new Gio.Settings({ schema: OVERRIDE_SCHEMA });
+        this._settings.connect('changed::dynamic-workspaces',
+            Lang.bind(this, this._updateSwitcherVisibility));
+    },
+
+    _updateSwitcherVisibility: function() {
+        this.actor.visible =
+            this._settings.get_boolean('dynamic-workspaces') ||
+                global.screen.n_workspaces > 1;
     },
 
     _onButtonRelease: function(actor, event) {
@@ -564,7 +617,7 @@ const ThumbnailsBox = new Lang.Class({
             let thumbnail = this._thumbnails[i]
             let [w, h] = thumbnail.actor.get_transformed_size();
             if (y >= thumbnail.actor.y && y <= thumbnail.actor.y + h) {
-                thumbnail.activate(event.time);
+                thumbnail.activate(event.get_time());
                 break;
             }
         }
@@ -620,9 +673,7 @@ const ThumbnailsBox = new Lang.Class({
         if (!source.realWindow && !source.shellWorkspaceLaunch && source != Main.xdndHandler)
             return DND.DragMotionResult.CONTINUE;
 
-        if (!Meta.prefs_get_dynamic_workspaces())
-            return DND.DragMotionResult.CONTINUE;
-
+        let canCreateWorkspaces = Meta.prefs_get_dynamic_workspaces();
         let spacing = this.actor.get_theme_node().get_length('spacing');
 
         this._dropWorkspace = -1;
@@ -647,7 +698,7 @@ const ThumbnailsBox = new Lang.Class({
             if (i == this._dropPlaceholderPos)
                 targetBottom += this._dropPlaceholder.get_height();
 
-            if (y > targetTop && y <= targetBottom && source != Main.xdndHandler) {
+            if (y > targetTop && y <= targetBottom && source != Main.xdndHandler && canCreateWorkspaces) {
                 placeholderPos = i;
                 break;
             } else if (y > targetBottom && y <= nextTargetTop) {
@@ -694,6 +745,8 @@ const ThumbnailsBox = new Lang.Class({
                     return win.get_workspace() >= newWorkspaceIndex;
             });
 
+            this._spliceIndex = newWorkspaceIndex;
+
             // ... move them down one.
             windows.forEach(function(win) {
                 win.meta_window.change_workspace_by_index(win.get_workspace() + 1,
@@ -715,16 +768,30 @@ const ThumbnailsBox = new Lang.Class({
                                         WORKSPACE_KEEP_ALIVE_TIME);
             }
 
+            // Start the animation on the workspace (which is actually
+            // an old one which just became empty)
+            let thumbnail = this._thumbnails[newWorkspaceIndex];
+            this._setThumbnailState(thumbnail, ThumbnailState.NEW);
+            thumbnail.slidePosition = 1;
+
+            this._queueUpdateStates();
+
             return true;
         } else {
             return false;
         }
     },
 
-    show: function() {
+    _createThumbnails: function() {
         this._switchWorkspaceNotifyId =
             global.window_manager.connect('switch-workspace',
                                           Lang.bind(this, this._activeWorkspaceChanged));
+        this._nWorkspacesNotifyId =
+            global.screen.connect('notify::n-workspaces',
+                                  Lang.bind(this, this._workspacesChanged));
+        this._syncStackingId =
+            Main.overview.connect('windows-restacked',
+                                  Lang.bind(this, this._syncStacking));
 
         this._targetScale = 0;
         this._scale = 0;
@@ -736,27 +803,55 @@ const ThumbnailsBox = new Lang.Class({
             this._stateCounts[ThumbnailState[key]] = 0;
 
         // The "porthole" is the portion of the screen that we show in the workspaces
-        let panelHeight = Main.panel.actor.height;
-        let monitor = Main.layoutManager.primaryMonitor;
-        this._porthole = {
-            x: monitor.x,
-            y: monitor.y + panelHeight,
-            width: monitor.width,
-            height: monitor.height - panelHeight
-        };
+        this._porthole = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
 
         this.addThumbnails(0, global.screen.n_workspaces);
+
+        this._updateSwitcherVisibility();
     },
 
-    hide: function() {
+    _destroyThumbnails: function() {
         if (this._switchWorkspaceNotifyId > 0) {
             global.window_manager.disconnect(this._switchWorkspaceNotifyId);
             this._switchWorkspaceNotifyId = 0;
+        }
+        if (this._nWorkspacesNotifyId > 0) {
+            global.screen.disconnect(this._nWorkspacesNotifyId);
+            this._nWorkspacesNotifyId = 0;
+        }
+
+        if (this._syncStackingId > 0) {
+            Main.overview.disconnect(this._syncStackingId);
+            this._syncStackingId = 0;
         }
 
         for (let w = 0; w < this._thumbnails.length; w++)
             this._thumbnails[w].destroy();
         this._thumbnails = [];
+    },
+
+    _workspacesChanged: function() {
+        let oldNumWorkspaces = this._thumbnails.length;
+        let newNumWorkspaces = global.screen.n_workspaces;
+        let active = global.screen.get_active_workspace_index();
+
+        if (newNumWorkspaces > oldNumWorkspaces) {
+            this.addThumbnails(oldNumWorkspaces, newNumWorkspaces - oldNumWorkspaces);
+        } else {
+            let removedIndex;
+            let removedNum = oldNumWorkspaces - newNumWorkspaces;
+            for (let w = 0; w < oldNumWorkspaces; w++) {
+                let metaWorkspace = global.screen.get_workspace_by_index(w);
+                if (this._thumbnails[w].metaWorkspace != metaWorkspace) {
+                    removedIndex = w;
+                    break;
+                }
+            }
+
+            this.removeThumbnails(removedIndex, removedNum);
+        }
+
+        this._updateSwitcherVisibility();
     },
 
     addThumbnails: function(start, count) {
@@ -768,7 +863,8 @@ const ThumbnailsBox = new Lang.Class({
             this._thumbnails.push(thumbnail);
             this.actor.add_actor(thumbnail.actor);
 
-            if (start > 0) { // not the initial fill
+            if (start > 0 && this._spliceIndex == -1) {
+                // not the initial fill, and not splicing via DND
                 thumbnail.state = ThumbnailState.NEW;
                 thumbnail.slidePosition = 1; // start slid out
                 this._haveNewThumbnails = true;
@@ -783,9 +879,12 @@ const ThumbnailsBox = new Lang.Class({
 
         // The thumbnails indicator actually needs to be on top of the thumbnails
         this._indicator.raise_top();
+
+        // Clear the splice index, we got the message
+        this._spliceIndex = -1;
     },
 
-    removeThumbmails: function(start, count) {
+    removeThumbnails: function(start, count) {
         let currentPos = 0;
         for (let k = 0; k < this._thumbnails.length; k++) {
             let thumbnail = this._thumbnails[k];
@@ -804,7 +903,7 @@ const ThumbnailsBox = new Lang.Class({
         this._queueUpdateStates();
     },
 
-    syncStacking: function(stackIndices) {
+    _syncStacking: function(overview, stackIndices) {
         for (let i = 0; i < this._thumbnails.length; i++)
             this._thumbnails[i].syncStacking(stackIndices);
     },
@@ -942,8 +1041,6 @@ const ThumbnailsBox = new Lang.Class({
         // See comment about this._background in _init()
         let themeNode = this._background.get_theme_node();
 
-        forWidth = themeNode.adjust_for_width(forWidth);
-
         // Note that for getPreferredWidth/Height we cheat a bit and skip propagating
         // the size request to our children because we know how big they are and know
         // that the actors aren't depending on the virtual functions being called.
@@ -1045,9 +1142,16 @@ const ThumbnailsBox = new Lang.Class({
         childBox.y2 = box.y2;
         this._background.allocate(childBox, flags);
 
-        let indicatorY = this._indicatorY;
+        let indicatorY1 = this._indicatorY;
+        let indicatorY2;
         // when not animating, the workspace position overrides this._indicatorY
         let indicatorWorkspace = !this._animatingIndicator ? global.screen.get_active_workspace() : null;
+        let indicatorThemeNode = this._indicator.get_theme_node();
+
+        let indicatorTopFullBorder = indicatorThemeNode.get_padding(St.Side.TOP) + indicatorThemeNode.get_border_width(St.Side.TOP);
+        let indicatorBottomFullBorder = indicatorThemeNode.get_padding(St.Side.BOTTOM) + indicatorThemeNode.get_border_width(St.Side.BOTTOM);
+        let indicatorLeftFullBorder = indicatorThemeNode.get_padding(St.Side.LEFT) + indicatorThemeNode.get_border_width(St.Side.LEFT);
+        let indicatorRightFullBorder = indicatorThemeNode.get_padding(St.Side.RIGHT) + indicatorThemeNode.get_border_width(St.Side.RIGHT);
 
         let y = contentBox.y1;
 
@@ -1093,8 +1197,10 @@ const ThumbnailsBox = new Lang.Class({
             let y2 = Math.round(y + thumbnailHeight);
             let roundedVScale = (y2 - y1) / portholeHeight;
 
-            if (thumbnail.metaWorkspace == indicatorWorkspace)
-                indicatorY = y1;
+            if (thumbnail.metaWorkspace == indicatorWorkspace) {
+                indicatorY1 = y1;
+                indicatorY2 = y2;
+            }
 
             // Allocating a scaled actor is funny - x1/y1 correspond to the origin
             // of the actor, but x2/y2 are increased by the *unscaled* size.
@@ -1119,8 +1225,10 @@ const ThumbnailsBox = new Lang.Class({
             childBox.x1 = contentBox.x2 - thumbnailWidth;
             childBox.x2 = contentBox.x2;
         }
-        childBox.y1 = indicatorY;
-        childBox.y2 = childBox.y1 + thumbnailHeight;
+        childBox.x1 -= indicatorLeftFullBorder;
+        childBox.x2 += indicatorRightFullBorder;
+        childBox.y1 = indicatorY1 - indicatorTopFullBorder;
+        childBox.y2 = (indicatorY2 ? indicatorY2 : (indicatorY1 + thumbnailHeight)) + indicatorBottomFullBorder;
         this._indicator.allocate(childBox, flags);
     },
 
@@ -1135,7 +1243,9 @@ const ThumbnailsBox = new Lang.Class({
         }
 
         this._animatingIndicator = true;
-        this.indicatorY = this._indicator.allocation.y1;
+        let indicatorThemeNode = this._indicator.get_theme_node();
+        let indicatorTopFullBorder = indicatorThemeNode.get_padding(St.Side.TOP) + indicatorThemeNode.get_border_width(St.Side.TOP);
+        this.indicatorY = this._indicator.allocation.y1 + indicatorTopFullBorder;
         Tweener.addTween(this,
                          { indicatorY: thumbnail.actor.allocation.y1,
                            time: WorkspacesView.WORKSPACE_SWITCH_TIME,

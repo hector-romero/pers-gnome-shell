@@ -3,19 +3,20 @@
 // Common utils for the extension system and the extension
 // preferences tool
 
+const Lang = imports.lang;
+const Signals = imports.signals;
+
 const GLib = imports.gi.GLib;
 const Gio = imports.gi.Gio;
 const ShellJS = imports.gi.ShellJS;
 
 const Config = imports.misc.config;
+const FileUtils = imports.misc.fileUtils;
 
 const ExtensionType = {
     SYSTEM: 1,
     PER_USER: 2
 };
-
-// GFile for user extensions
-var userExtensionsDir = null;
 
 // Maps uuid -> metadata object
 const extensions = {};
@@ -40,13 +41,18 @@ function getCurrentExtension() {
         throw new Error('Could not find current extension');
 
     let path = match[1];
-    let uuid = GLib.path_get_basename(GLib.path_get_dirname(path));
+    let file = Gio.File.new_for_path(path);
 
-    let extension = extensions[uuid];
-    if (extension === undefined)
-        throw new Error('Could not find current extension');
+    // Walk up the directory tree, looking for an extesion with
+    // the same UUID as a directory name.
+    while (file != null) {
+        let extension = extensions[file.get_basename()];
+        if (extension !== undefined)
+            return extension;
+        file = file.get_parent();
+    }
 
-    return extension;
+    throw new Error('Could not find current extension');
 }
 
 /**
@@ -83,9 +89,6 @@ function isOutOfDate(extension) {
     if (!versionCheck(extension.metadata['shell-version'], Config.PACKAGE_VERSION))
         return true;
 
-    if (extension.metadata['js-version'] && !versionCheck(extension.metadata['js-version'], Config.GJS_VERSION))
-        return true;
-
     return false;
 }
 
@@ -118,11 +121,6 @@ function createExtensionObject(uuid, dir, type) {
         }
     }
 
-    // Encourage people to add this
-    if (!meta.url) {
-        global.log('Warning: Missing "url" property in metadata.json');
-    }
-
     if (uuid != meta.uuid) {
         throw new Error('uuid "' + meta.uuid + '" from metadata.json does not match directory name "' + uuid + '"');
     }
@@ -150,45 +148,43 @@ function installImporter(extension) {
     _extension = null;
 }
 
-function init() {
-    let userExtensionsPath = GLib.build_filenamev([global.userdatadir, 'extensions']);
-    userExtensionsDir = Gio.file_new_for_path(userExtensionsPath);
-    try {
-        if (!userExtensionsDir.query_exists(null))
-            userExtensionsDir.make_directory_with_parents(null);
-    } catch (e) {
-        global.logError('' + e);
-    }
-}
+const ExtensionFinder = new Lang.Class({
+    Name: 'ExtensionFinder',
 
-function scanExtensionsInDirectory(callback, dir, type) {
-    let fileEnum;
-    let file, info;
-    try {
-        fileEnum = dir.enumerate_children('standard::*', Gio.FileQueryInfoFlags.NONE, null);
-    } catch(e) {
-        global.logError('' + e);
-        return;
-    }
-
-    while ((info = fileEnum.next_file(null)) != null) {
+    _loadExtension: function(extensionDir, info, perUserDir) {
         let fileType = info.get_file_type();
         if (fileType != Gio.FileType.DIRECTORY)
-            continue;
+            return;
         let uuid = info.get_name();
-        let extensionDir = dir.get_child(uuid);
-        callback(uuid, extensionDir, type);
-    }
-    fileEnum.close(null);
-}
+        let existing = extensions[uuid];
+        if (existing) {
+            log('Extension %s already installed in %s. %s will not be loaded'.format(uuid, existing.path, extensionDir.get_path()));
+            return;
+        }
 
-function scanExtensions(callback) {
-    let systemDataDirs = GLib.get_system_data_dirs();
-    scanExtensionsInDirectory(callback, userExtensionsDir, ExtensionType.PER_USER);
-    for (let i = 0; i < systemDataDirs.length; i++) {
-        let dirPath = GLib.build_filenamev([systemDataDirs[i], 'gnome-shell', 'extensions']);
-        let dir = Gio.file_new_for_path(dirPath);
-        if (dir.query_exists(null))
-            scanExtensionsInDirectory(callback, dir, ExtensionType.SYSTEM);
+        let extension;
+        let type = extensionDir.has_prefix(perUserDir) ? ExtensionType.PER_USER
+                                                       : ExtensionType.SYSTEM;
+        try {
+            extension = createExtensionObject(uuid, extensionDir, type);
+        } catch(e) {
+            logError(e, 'Could not load extension %s'.format(uuid));
+            return;
+        }
+        this.emit('extension-found', extension);
+    },
+
+    _extensionsLoaded: function() {
+        this.emit('extensions-loaded');
+    },
+
+    scanExtensions: function() {
+        let perUserDir = Gio.File.new_for_path(global.userdatadir);
+        FileUtils.collectFromDatadirsAsync('extensions',
+                                           { processFile: Lang.bind(this, this._loadExtension),
+                                             loadedCallback: Lang.bind(this, this._extensionsLoaded),
+                                             includeUserDir: true,
+                                             data: perUserDir });
     }
-}
+});
+Signals.addSignalMethods(ExtensionFinder.prototype);

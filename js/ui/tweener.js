@@ -2,6 +2,7 @@
 
 const Clutter = imports.gi.Clutter;
 const GLib = imports.gi.GLib;
+const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
 const Shell = imports.gi.Shell;
@@ -72,6 +73,9 @@ function _wrapTweening(target, tweeningParameters) {
             state.destroyedId = target.actor.connect('destroy', function() { _actorDestroyed(target); });
         }
     }
+
+    if (!Gtk.Settings.get_default().gtk_enable_animations)
+        tweeningParameters['time'] = 0.000001;
 
     _addHandler(target, tweeningParameters, 'onStart', _tweenStarted);
     _addHandler(target, tweeningParameters, 'onComplete', _tweenCompleted);

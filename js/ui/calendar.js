@@ -2,6 +2,7 @@
 
 const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
+const GLib = imports.gi.GLib;
 const Lang = imports.lang;
 const St = imports.gi.St;
 const Signals = imports.signals;
@@ -11,7 +12,6 @@ const Mainloop = imports.mainloop;
 const Shell = imports.gi.Shell;
 
 const MSECS_IN_DAY = 24 * 60 * 60 * 1000;
-const WEEKDATE_HEADER_WIDTH_DIGITS = 3;
 const SHOW_WEEKDATE_KEY = 'show-weekdate';
 
 // in org.gnome.desktop.interface
@@ -63,15 +63,18 @@ function _formatEventTime(event, clockFormat) {
     } else {
         switch (clockFormat) {
         case '24h':
-            /* Translators: Shown in calendar event list, if 24h format */
-            ret = event.date.toLocaleFormat(C_("event list time", "%H:%M"));
+            /* Translators: Shown in calendar event list, if 24h format,
+               \u2236 is a ratio character, similar to : */
+            ret = event.date.toLocaleFormat(C_("event list time", "%H\u2236%M"));
             break;
 
         default:
             /* explicit fall-through */
         case '12h':
-            /* Transators: Shown in calendar event list, if 12h format */
-            ret = event.date.toLocaleFormat(C_("event list time", "%l:%M %p"));
+            /* Translators: Shown in calendar event list, if 12h format,
+               \u2236 is a ratio character, similar to : and \u2009 is
+               a thin space */
+            ret = event.date.toLocaleFormat(C_("event list time", "%l\u2236%M\u2009%p"));
             break;
         }
     }
@@ -93,15 +96,6 @@ function _getCalendarWeekForDate(date) {
     let weekNumber = Math.floor(dayNumber / 7) + 1;
 
     return weekNumber;
-}
-
-function _getDigitWidth(actor){
-    let context = actor.get_pango_context();
-    let themeNode = actor.get_theme_node();
-    let font = themeNode.get_font();
-    let metrics = context.get_metrics(font, context.get_language());
-    let width = metrics.get_approximate_digit_width();
-    return width;
 }
 
 function _getCalendarDayAbbreviation(dayNumber) {
@@ -174,6 +168,12 @@ const EmptyEventSource = new Lang.Class({
     Name: 'EmptyEventSource',
 
     _init: function() {
+        this.isLoading = false;
+        this.isDummy = true;
+        this.hasCalendars = false;
+    },
+
+    destroy: function() {
     },
 
     requestRange: function(begin, end) {
@@ -197,22 +197,18 @@ const CalendarServerIface = <interface name="org.gnome.Shell.CalendarServer">
     <arg type="b" direction="in" />
     <arg type="a(sssbxxa{sv})" direction="out" />
 </method>
+<property name="HasCalendars" type="b" access="read" />
 <signal name="Changed" />
 </interface>;
 
 const CalendarServerInfo  = Gio.DBusInterfaceInfo.new_for_xml(CalendarServerIface);
 
 function CalendarServer() {
-    var self = new Gio.DBusProxy({ g_connection: Gio.DBus.session,
-				   g_interface_name: CalendarServerInfo.name,
-				   g_interface_info: CalendarServerInfo,
-				   g_name: 'org.gnome.Shell.CalendarServer',
-				   g_object_path: '/org/gnome/Shell/CalendarServer',
-                                   g_flags: (Gio.DBusProxyFlags.DO_NOT_AUTO_START |
-                                             Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES) });
-
-    self.init(null);
-    return self;
+    return new Gio.DBusProxy({ g_connection: Gio.DBus.session,
+                               g_interface_name: CalendarServerInfo.name,
+                               g_interface_info: CalendarServerInfo,
+                               g_name: 'org.gnome.Shell.CalendarServer',
+                               g_object_path: '/org/gnome/Shell/CalendarServer' });
 }
 
 function _datesEqual(a, b) {
@@ -239,16 +235,47 @@ const DBusEventSource = new Lang.Class({
 
     _init: function() {
         this._resetCache();
+        this.isLoading = false;
+        this.isDummy = false;
 
+        this._initialized = false;
         this._dbusProxy = new CalendarServer();
-        this._dbusProxy.connectSignal('Changed', Lang.bind(this, this._onChanged));
+        this._dbusProxy.init_async(GLib.PRIORITY_DEFAULT, null, Lang.bind(this, function(object, result) {
+            try {
+                this._dbusProxy.init_finish(result);
+            } catch(e) {
+                log('Error loading calendars: ' + e.message);
+                return;
+            }
 
-        this._dbusProxy.connect('notify::g-name-owner', Lang.bind(this, function() {
-            if (this._dbusProxy.g_name_owner)
-                this._onNameAppeared();
-            else
-                this._onNameVanished();
+            this._dbusProxy.connectSignal('Changed', Lang.bind(this, this._onChanged));
+
+            this._dbusProxy.connect('notify::g-name-owner', Lang.bind(this, function() {
+                if (this._dbusProxy.g_name_owner)
+                    this._onNameAppeared();
+                else
+                    this._onNameVanished();
+            }));
+
+            this._dbusProxy.connect('g-properties-changed', Lang.bind(this, function() {
+                this.emit('notify::has-calendars');
+            }));
+
+            this._initialized = true;
+            this.emit('notify::has-calendars');
+            this._onNameAppeared();
         }));
+    },
+
+    destroy: function() {
+        this._dbusProxy.run_dispose();
+    },
+
+    get hasCalendars() {
+        if (this._initialized)
+            return this._dbusProxy.HasCalendars;
+        else
+            return false;
     },
 
     _resetCache: function() {
@@ -271,8 +298,9 @@ const DBusEventSource = new Lang.Class({
         this._loadEvents(false);
     },
 
-    _onEventsReceived: function([appointments]) {
+    _onEventsReceived: function(results, error) {
         let newEvents = [];
+        let appointments = results ? results[0] : null;
         if (appointments != null) {
             for (let n = 0; n < appointments.length; n++) {
                 let a = appointments[n];
@@ -289,10 +317,15 @@ const DBusEventSource = new Lang.Class({
         }
 
         this._events = newEvents;
+        this.isLoading = false;
         this.emit('changed');
     },
 
     _loadEvents: function(forceReload) {
+        // Ignore while loading
+        if (!this._initialized)
+            return;
+
         if (this._curRequestBegin && this._curRequestEnd){
             let callFlags = Gio.DBusCallFlags.NO_AUTO_START;
             if (forceReload)
@@ -307,6 +340,7 @@ const DBusEventSource = new Lang.Class({
 
     requestRange: function(begin, end, forceReload) {
         if (forceReload || !(_datesEqual(begin, this._lastRequestBegin) && _datesEqual(end, this._lastRequestEnd))) {
+            this.isLoading = true;
             this._lastRequestBegin = begin;
             this._lastRequestEnd = end;
             this._curRequestBegin = begin;
@@ -340,25 +374,11 @@ const DBusEventSource = new Lang.Class({
 });
 Signals.addSignalMethods(DBusEventSource.prototype);
 
-// Calendar:
-// @eventSource: is an object implementing the EventSource API, e.g. the
-// requestRange(), getEvents(), hasEvents() methods and the ::changed signal.
 const Calendar = new Lang.Class({
     Name: 'Calendar',
 
-    _init: function(eventSource) {
-        if (eventSource) {
-            this._eventSource = eventSource;
-
-            this._eventSource.connect('changed', Lang.bind(this,
-                                                           function() {
-                                                               this._update(false);
-                                                           }));
-        }
-
+    _init: function() {
         this._weekStart = Shell.util_get_week_start();
-        this._weekdate = NaN;
-        this._digitWidth = NaN;
         this._settings = new Gio.Settings({ schema: 'org.gnome.shell.calendar' });
 
         this._settings.connect('changed::' + SHOW_WEEKDATE_KEY, Lang.bind(this, this._onSettingsChange));
@@ -392,6 +412,16 @@ const Calendar = new Lang.Class({
         this._buildHeader ();
     },
 
+    // @eventSource: is an object implementing the EventSource API, e.g. the
+    // requestRange(), getEvents(), hasEvents() methods and the ::changed signal.
+    setEventSource: function(eventSource) {
+        this._eventSource = eventSource;
+        this._eventSource.connect('changed', Lang.bind(this, function() {
+            this._update(false);
+        }));
+        this._update(true);
+    },
+
     // Sets the calendar to show a specific date
     setDate: function(date, forceReload) {
         if (!_sameDay(date, this._selectedDate)) {
@@ -412,8 +442,6 @@ const Calendar = new Lang.Class({
         this._topBox = new St.BoxLayout();
         this.actor.add(this._topBox,
                        { row: 0, col: 0, col_span: offsetCols + 7 });
-
-        this.actor.connect('style-changed', Lang.bind(this, this._onStyleChange));
 
         let back = new St.Button({ style_class: 'calendar-change-month-back' });
         this._topBox.add(back);
@@ -448,19 +476,7 @@ const Calendar = new Lang.Class({
         }
 
         // All the children after this are days, and get removed when we update the calendar
-        this._firstDayIndex = this.actor.get_children().length;
-    },
-
-    _onStyleChange: function(actor, event) {
-        // width of a digit in pango units
-        this._digitWidth = _getDigitWidth(this.actor) / Pango.SCALE;
-        this._setWeekdateHeaderWidth();
-    },
-
-    _setWeekdateHeaderWidth: function() {
-        if (this.digitWidth != NaN && this._useWeekdate && this._weekdateHeader) {
-            this._weekdateHeader.set_width (this._digitWidth * WEEKDATE_HEADER_WIDTH_DIGITS);
-        }
+        this._firstDayIndex = this.actor.get_n_children();
     },
 
     _onScroll : function(actor, event) {
@@ -540,19 +556,44 @@ const Calendar = new Lang.Class({
             children[i].destroy();
 
         // Start at the beginning of the week before the start of the month
+        //
+        // We want to show always 6 weeks (to keep the calendar menu at the same
+        // height if there are no events), so we pad it according to the following
+        // policy:
+        //
+        // 1 - If a month has 6 weeks, we place no padding (example: Dec 2012)
+        // 2 - If a month has 5 weeks and it starts on week start, we pad one week
+        //     before it (example: Apr 2012)
+        // 3 - If a month has 5 weeks and it starts on any other day, we pad one week
+        //     after it (example: Nov 2012)
+        // 4 - If a month has 4 weeks, we pad one week before and one after it
+        //     (example: Feb 2010)
+        //
+        // Actually computing the number of weeks is complex, but we know that the
+        // problematic categories (2 and 4) always start on week start, and that
+        // all months at the end have 6 weeks.
+
         let beginDate = new Date(this._selectedDate);
         beginDate.setDate(1);
         beginDate.setSeconds(0);
         beginDate.setHours(12);
+        let year = beginDate.getYear();
+
         let daysToWeekStart = (7 + beginDate.getDay() - this._weekStart) % 7;
-        beginDate.setTime(beginDate.getTime() - daysToWeekStart * MSECS_IN_DAY);
+        let startsOnWeekStart = daysToWeekStart == 0;
+        let weekPadding = startsOnWeekStart ? 7 : 0;
+
+        beginDate.setTime(beginDate.getTime() - (weekPadding + daysToWeekStart) * MSECS_IN_DAY);
 
         let iter = new Date(beginDate);
         let row = 2;
-        while (true) {
+        // nRows here means 6 weeks + one header + one navbar
+        let nRows = 8;
+        while (row < 8) {
             let button = new St.Button({ label: iter.getDate().toString() });
+            let rtl = button.get_text_direction() == Clutter.TextDirection.RTL;
 
-            if (!this._eventSource)
+            if (this._eventSource.isDummy)
                 button.reactive = false;
 
             let iterStr = iter.toUTCString();
@@ -561,8 +602,9 @@ const Calendar = new Lang.Class({
                 this.setDate(newlySelectedDate, false);
             }));
 
-            let hasEvents = this._eventSource && this._eventSource.hasEvents(iter);
+            let hasEvents = this._eventSource.hasEvents(iter);
             let styleClass = 'calendar-day-base calendar-day';
+
             if (_isWorkDay(iter))
                 styleClass += ' calendar-work-day'
             else
@@ -571,7 +613,10 @@ const Calendar = new Lang.Class({
             // Hack used in lieu of border-collapse - see gnome-shell.css
             if (row == 2)
                 styleClass = 'calendar-day-top ' + styleClass;
-            if (iter.getDay() == this._weekStart)
+
+            let leftMost = rtl ? iter.getDay() == (this._weekStart + 6) % 7
+                               : iter.getDay() == this._weekStart;
+            if (leftMost)
                 styleClass = 'calendar-day-left ' + styleClass;
 
             if (_sameDay(now, iter))
@@ -599,17 +644,13 @@ const Calendar = new Lang.Class({
             }
 
             iter.setTime(iter.getTime() + MSECS_IN_DAY);
-            if (iter.getDay() == this._weekStart) {
-                // We stop on the first "first day of the week" after the month we are displaying
-                if (iter.getMonth() > this._selectedDate.getMonth() || iter.getYear() > this._selectedDate.getYear())
-                    break;
+
+            if (iter.getDay() == this._weekStart)
                 row++;
-            }
         }
         // Signal to the event source that we are interested in events
         // only from this date range
-        if (this._eventSource)
-            this._eventSource.requestRange(beginDate, iter, forceReload);
+        this._eventSource.requestRange(beginDate, iter, forceReload);
     }
 });
 
@@ -618,16 +659,17 @@ Signals.addSignalMethods(Calendar.prototype);
 const EventsList = new Lang.Class({
     Name: 'EventsList',
 
-    _init: function(eventSource) {
+    _init: function() {
         this.actor = new St.BoxLayout({ vertical: true, style_class: 'events-header-vbox'});
         this._date = new Date();
-        this._eventSource = eventSource;
-        this._eventSource.connect('changed', Lang.bind(this, this._update));
         this._desktopSettings = new Gio.Settings({ schema: 'org.gnome.desktop.interface' });
         this._desktopSettings.connect('changed', Lang.bind(this, this._update));
         this._weekStart = Shell.util_get_week_start();
+    },
 
-        this._update();
+    setEventSource: function(eventSource) {
+        this._eventSource = eventSource;
+        this._eventSource.connect('changed', Lang.bind(this, this._update));
     },
 
     _addEvent: function(dayNameBox, timeBox, eventTitleBox, includeDayName, day, time, desc) {
@@ -644,9 +686,6 @@ const EventsList = new Lang.Class({
     },
 
     _addPeriod: function(header, begin, end, includeDayName, showNothingScheduled) {
-        if (!this._eventSource)
-            return;
-
         let events = this._eventSource.getEvents(begin, end);
 
         let clockFormat = this._desktopSettings.get_string(CLOCK_FORMAT_KEY);;
@@ -713,13 +752,15 @@ const EventsList = new Lang.Class({
         let tomorrowEnd = new Date(dayEnd.getTime() + 86400 * 1000);
         this._addPeriod(_("Tomorrow"), tomorrowBegin, tomorrowEnd, false, true);
 
-        if (dayEnd.getDay() <= 4 + this._weekStart) {
+        let dayInWeek = (dayEnd.getDay() - this._weekStart + 7) % 7;
+
+        if (dayInWeek < 5) {
             /* If now is within the first 5 days we show "This week" and
              * include events up until and including Saturday/Sunday
              * (depending on whether a week starts on Sunday/Monday).
              */
             let thisWeekBegin = new Date(dayBegin.getTime() + 2 * 86400 * 1000);
-            let thisWeekEnd = new Date(dayEnd.getTime() + (6 + this._weekStart - dayEnd.getDay()) * 86400 * 1000);
+            let thisWeekEnd = new Date(dayEnd.getTime() + (6 - dayInWeek) * 86400 * 1000);
             this._addPeriod(_("This week"), thisWeekBegin, thisWeekEnd, true, false);
         } else {
             /* otherwise it's one of the two last days of the week ... show
@@ -727,7 +768,7 @@ const EventsList = new Lang.Class({
              * Saturday/Sunday
              */
             let nextWeekBegin = new Date(dayBegin.getTime() + 2 * 86400 * 1000);
-            let nextWeekEnd = new Date(dayEnd.getTime() + (13 + this._weekStart - dayEnd.getDay()) * 86400 * 1000);
+            let nextWeekEnd = new Date(dayEnd.getTime() + (13 - dayInWeek) * 86400 * 1000);
             this._addPeriod(_("Next week"), nextWeekBegin, nextWeekEnd, true, false);
         }
     },
@@ -741,6 +782,9 @@ const EventsList = new Lang.Class({
     },
 
     _update: function() {
+        if (this._eventSource.isLoading)
+            return;
+
         let today = new Date();
         if (_sameDay (this._date, today)) {
             this._showToday();

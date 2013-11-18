@@ -1,23 +1,24 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
-const Clutter = imports.gi.Clutter;
 const GdkPixbuf = imports.gi.GdkPixbuf;
 const GLib = imports.gi.GLib;
+const Gio = imports.gi.Gio;
 const Lang = imports.lang;
-const Shell = imports.gi.Shell;
-const Signals = imports.signals;
 const St = imports.gi.St;
 
 const IconGrid = imports.ui.iconGrid;
+const Layout = imports.ui.layout;
 const Main = imports.ui.main;
-const Search = imports.ui.search;
+const Panel = imports.ui.panel;
 
-// we could make these gsettings
 const FISH_NAME = 'wanda';
+const FISH_FILENAME = 'wanda.png';
 const FISH_SPEED = 300;
 const FISH_COMMAND = 'fortune';
+// The size of an individual frame in the animation
+const FISH_HEIGHT = 22;
+const FISH_WIDTH = 36;
 
-const GNOME_PANEL_PIXMAPDIR = '../gnome-panel/fish';
 const FISH_GROUP = 'Fish Animation';
 
 const MAGIC_FISH_KEY = 'free the fish';
@@ -27,82 +28,34 @@ const WandaIcon = new Lang.Class({
     Extends: IconGrid.BaseIcon,
 
     _init : function(fish, label, params) {
-        this._fish = fish;
-        let file = GLib.build_filenamev([global.datadir, GNOME_PANEL_PIXMAPDIR, fish + '.fish']);
-
-        if (GLib.file_test(file, GLib.FileTest.EXISTS)) {
-            this._keyfile = new GLib.KeyFile();
-            this._keyfile.load_from_file(file, GLib.KeyFileFlags.NONE);
-
-            this._imageFile = GLib.build_filenamev([global.datadir, GNOME_PANEL_PIXMAPDIR,
-                                                    this._keyfile.get_string(FISH_GROUP, 'image')]);
-
-            let tmpPixbuf = GdkPixbuf.Pixbuf.new_from_file(this._imageFile);
-
-            this._imgHeight = tmpPixbuf.height;
-            this._imgWidth = tmpPixbuf.width / this._keyfile.get_integer(FISH_GROUP, 'frames');
-        } else {
-            this._imageFile = null;
-        }
-
         this.parent(label, params);
+
+        this._fish = fish;
+        this._imageFile = GLib.build_filenamev([global.datadir, fish + '.png']);
+
+        this._imgHeight = FISH_HEIGHT;
+        this._imgWidth = FISH_WIDTH;
     },
 
     createIcon: function(iconSize) {
-        if (this._animations)
-            this._animations.destroy();
-
-        if (!this._imageFile) {
-            return new St.Icon({ icon_name: 'face-smile',
-                                 icon_type: St.IconType.FULLCOLOR,
-                                 icon_size: iconSize
-                               });
-        }
-
-        this._animations = St.TextureCache.get_default().load_sliced_image(this._imageFile, this._imgWidth, this._imgHeight);
-        this._animations.connect('destroy', Lang.bind(this, function() {
-            if (this._timeoutId)
-                GLib.source_remove(this._timeoutId);
-            this._timeoutId = 0;
-            this._animations = null;
-        }));
-        this._animations.connect('notify::mapped', Lang.bind(this, function() {
-            if (this._animations.mapped && !this._timeoutId) {
-                this._timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, FISH_SPEED, Lang.bind(this, this._update));
-
-                this._i = 0;
-                this._update();
-            } else if (!this._animations.mapped && this._timeoutId) {
-                GLib.source_remove(this._timeoutId);
-                this._timeoutId = 0;
-            }
-        }));
-
-        this._i = 0;
-
-        return this._animations;
+        this._animations = new Panel.Animation(this._imageFile, this._imgWidth, this._imgHeight, FISH_SPEED);
+        this._animations.play();
+        return this._animations.actor;
     },
 
-    _update: function() {
-        let n = this._animations.get_n_children();
-        if (n == 0) {
-            return true;
-        }
+    _createIconTexture: function(size) {
+        if (size == this.iconSize)
+            return;
 
-        this._animations.get_child_at_index(this._i).hide();
-        this._i = (this._i + 1) % n;
-        this._animations.get_child_at_index(this._i).show();
-
-        return true;
-    },
+        this.parent(size);
+    }
 });
 
 const WandaIconBin = new Lang.Class({
     Name: 'WandaIconBin',
 
     _init: function(fish, label, params) {
-        this.actor = new St.Bin({ style_class: 'search-result-content',
-                                  reactive: true,
+        this.actor = new St.Bin({ reactive: true,
                                   track_hover: true });
         this.icon = new WandaIcon(fish, label, params);
 
@@ -142,17 +95,18 @@ const FortuneDialog = new Lang.Class({
         this._button.connect('clicked', Lang.bind(this, this.destroy));
         this._button.child = this._box;
 
-        let monitor = Main.layoutManager.primaryMonitor;
+        this._bin = new St.Bin({ x_align: St.Align.MIDDLE,
+                                 y_align: St.Align.MIDDLE });
+        this._bin.add_constraint(new Layout.MonitorConstraint({ primary: true }));
+        this._bin.add_actor(this._button);
 
-        Main.layoutManager.addChrome(this._button);
-        this._button.set_position(Math.floor(monitor.width / 2 - this._button.width / 2),
-                                  Math.floor(monitor.height / 2 - this._button.height / 2));
+        Main.layoutManager.addChrome(this._bin);
 
         GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 10, Lang.bind(this, this.destroy));
     },
 
     destroy: function() {
-        this._button.destroy();
+        this._bin.destroy();
     }
 });
 
@@ -162,43 +116,35 @@ function capitalize(str) {
 
 const WandaSearchProvider = new Lang.Class({
     Name: 'WandaSearchProvider',
-    Extends: Search.SearchProvider,
 
     _init: function() {
-        this.parent(_("Your favorite Easter Egg"));
+        this.id = 'wanda';
     },
 
-    getResultMetas: function(fish) {
-        return [{ 'id': fish[0], // there may be many fish in the sea, but
-                                 // only one which speaks the truth!
-                  'name': capitalize(fish[0]),
-                  'createIcon': function(iconSize) {
-                      // for DND only (maybe could be improved)
-                      // DON'T use St.Icon here, it crashes the shell
-                      // (dnd.js code assumes it can query the actor size
-                      // without parenting it, while StWidget accesses
-                      // StThemeNode in get_preferred_width/height, which
-                      // triggers an assertion failure)
-                      return St.TextureCache.get_default().load_icon_name(null,
-                                                                          'face-smile',
-                                                                          St.IconType.FULLCOLOR,
-                                                                          iconSize);
-                  }
-                }];
+    getResultMetas: function(fish, callback) {
+        callback([{ 'id': fish[0], // there may be many fish in the sea, but
+                    // only one which speaks the truth!
+                    'name': capitalize(fish[0]),
+                    'createIcon': function(iconSize) {
+                        return new St.Icon({ gicon: Gio.icon_new_for_string('face-smile'),
+                                             icon_size: iconSize });
+                    }
+                  }]);
     },
 
     getInitialResultSet: function(terms) {
         if (terms.join(' ') == MAGIC_FISH_KEY) {
-            return [ FISH_NAME ];
+            this.searchSystem.pushResults(this, [ FISH_NAME ]);
+        } else {
+            this.searchSystem.pushResults(this, []);
         }
-        return [];
     },
 
     getSubsearchResultSet: function(previousResults, terms) {
-        return this.getInitialResultSet(terms);
+        this.getInitialResultSet(terms);
     },
 
-    activateResult: function(fish, params) {
+    activateResult: function(fish) {
         if (this._dialog)
             this._dialog.destroy();
         this._dialog = new FortuneDialog(capitalize(fish), FISH_COMMAND);

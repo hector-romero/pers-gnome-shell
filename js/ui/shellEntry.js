@@ -1,19 +1,20 @@
+// -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
+
 const Clutter = imports.gi.Clutter;
 const Gtk = imports.gi.Gtk;
 const Lang = imports.lang;
 const St = imports.gi.St;
 
+const BoxPointer = imports.ui.boxpointer;
 const Main = imports.ui.main;
 const Params = imports.misc.params;
 const PopupMenu = imports.ui.popupMenu;
 
-const _EntryMenu = new Lang.Class({
+const EntryMenu = new Lang.Class({
     Name: 'ShellEntryMenu',
     Extends: PopupMenu.PopupMenu,
 
-    _init: function(entry, params) {
-        params = Params.parse (params, { isPassword: false });
-
+    _init: function(entry) {
         this.parent(entry, 0, St.Side.TOP);
 
         this.actor.add_style_class_name('entry-context-menu');
@@ -34,38 +35,59 @@ const _EntryMenu = new Lang.Class({
         this._pasteItem = item;
 
         this._passwordItem = null;
-        if (params.isPassword) {
-            item = new PopupMenu.PopupMenuItem('');
-            item.connect('activate', Lang.bind(this,
-                                               this._onPasswordActivated));
-            this.addMenuItem(item);
-            this._passwordItem = item;
-        }
 
         Main.uiGroup.add_actor(this.actor);
         this.actor.hide();
     },
 
-    open: function() {
+    _makePasswordItem: function() {
+        let item = new PopupMenu.PopupMenuItem('');
+        item.connect('activate', Lang.bind(this,
+                                           this._onPasswordActivated));
+        this.addMenuItem(item);
+        this._passwordItem = item;
+    },
+
+    get isPassword() {
+        return this._passwordItem != null;
+    },
+
+    set isPassword(v) {
+        if (v == this.isPassword)
+            return;
+
+        if (v) {
+            this._makePasswordItem();
+            this._entry.input_purpose = Gtk.InputPurpose.PASSWORD;
+        } else {
+            this._passwordItem.destroy();
+            this._passwordItem = null;
+            this._entry.input_purpose = Gtk.InputPurpose.FREE_FORM;
+        }
+    },
+
+    open: function(animate) {
         this._updatePasteItem();
         this._updateCopyItem();
         if (this._passwordItem)
             this._updatePasswordItem();
 
+        this.parent(animate);
+        this._entry.add_style_pseudo_class('focus');
+
         let direction = Gtk.DirectionType.TAB_FORWARD;
         if (!this.actor.navigate_focus(null, direction, false))
             this.actor.grab_key_focus();
-
-        this.parent();
     },
 
     _updateCopyItem: function() {
         let selection = this._entry.clutter_text.get_selection();
-        this._copyItem.setSensitive(selection && selection != '');
+        this._copyItem.setSensitive(!this._entry.clutter_text.password_char &&
+                                    selection && selection != '');
     },
 
     _updatePasteItem: function() {
-        this._clipboard.get_text(Lang.bind(this,
+        this._clipboard.get_text(St.ClipboardType.CLIPBOARD, Lang.bind(this,
             function(clipboard, text) {
                 this._pasteItem.setSensitive(text && text != '');
             }));
@@ -81,11 +103,11 @@ const _EntryMenu = new Lang.Class({
 
     _onCopyActivated: function() {
         let selection = this._entry.clutter_text.get_selection();
-        this._clipboard.set_text(selection);
+        this._clipboard.set_text(St.ClipboardType.CLIPBOARD, selection);
     },
 
     _onPasteActivated: function() {
-        this._clipboard.get_text(Lang.bind(this,
+        this._clipboard.get_text(St.ClipboardType.CLIPBOARD, Lang.bind(this,
             function(clipboard, text) {
                 if (!text)
                     return;
@@ -104,65 +126,51 @@ const _EntryMenu = new Lang.Class({
 function _setMenuAlignment(entry, stageX) {
     let [success, entryX, entryY] = entry.transform_stage_point(stageX, 0);
     if (success)
-        entry._menu.setSourceAlignment(entryX / entry.width);
+        entry.menu.setSourceAlignment(entryX / entry.width);
 };
 
-function _onClicked(action, actor) {
-    let entry = actor._menu ? actor : actor.get_parent();
-
-    if (entry._menu.isOpen) {
-        entry._menu.close();
-    } else if (action.get_button() == 3) {
-        let [stageX, stageY] = action.get_coords();
+function _onButtonPressEvent(actor, event, entry) {
+    if (entry.menu.isOpen) {
+        entry.menu.close(BoxPointer.PopupAnimation.FULL);
+        return true;
+    } else if (event.get_button() == 3) {
+        let [stageX, stageY] = event.get_coords();
         _setMenuAlignment(entry, stageX);
-        entry._menu.open();
-    }
-};
-
-function _onLongPress(action, actor, state) {
-    let entry = actor._menu ? actor : actor.get_parent();
-
-    if (state == Clutter.LongPressState.QUERY)
-        return action.get_button() == 1 && !entry._menu.isOpen;
-
-    if (state == Clutter.LongPressState.ACTIVATE) {
-        let [stageX, stageY] = action.get_coords();
-        _setMenuAlignment(entry, stageX);
-        entry._menu.open();
+        entry.menu.open(BoxPointer.PopupAnimation.FULL);
+        return true;
     }
     return false;
 };
 
-function _onPopup(actor) {
-    let entry = actor._menu ? actor : actor.get_parent();
+function _onPopup(actor, entry) {
     let [success, textX, textY, lineHeight] = entry.clutter_text.position_to_coords(-1);
     if (success)
-        entry._menu.setSourceAlignment(textX / entry.width);
-    entry._menu.open();
+        entry.menu.setSourceAlignment(textX / entry.width);
+    entry.menu.open(BoxPointer.PopupAnimation.FULL);
 };
 
 function addContextMenu(entry, params) {
-    if (entry._menu)
+    if (entry.menu)
         return;
 
-    entry._menu = new _EntryMenu(entry, params);
+    params = Params.parse (params, { isPassword: false });
+
+    entry.menu = new EntryMenu(entry);
+    entry.menu.isPassword = params.isPassword;
     entry._menuManager = new PopupMenu.PopupMenuManager({ actor: entry });
-    entry._menuManager.addMenu(entry._menu);
+    entry._menuManager.addMenu(entry.menu);
 
-    let clickAction;
-
-    // Add a click action to both the entry and its clutter_text; the former
+    // Add an event handler to both the entry and its clutter_text; the former
     // so padding is included in the clickable area, the latter because the
     // event processing of ClutterText prevents event-bubbling.
-    clickAction = new Clutter.ClickAction();
-    clickAction.connect('clicked', _onClicked);
-    clickAction.connect('long-press', _onLongPress);
-    entry.clutter_text.add_action(clickAction);
+    entry.clutter_text.connect('button-press-event', Lang.bind(null, _onButtonPressEvent, entry));
+    entry.connect('button-press-event', Lang.bind(null, _onButtonPressEvent, entry));
 
-    clickAction = new Clutter.ClickAction();
-    clickAction.connect('clicked', _onClicked);
-    clickAction.connect('long-press', _onLongPress);
-    entry.add_action(clickAction);
+    entry.connect('popup-menu', Lang.bind(null, _onPopup, entry));
 
-    entry.connect('popup-menu', _onPopup);
+    entry.connect('destroy', function() {
+        entry.menu.destroy();
+        entry.menu = null;
+        entry._menuManager = null;
+    });
 }

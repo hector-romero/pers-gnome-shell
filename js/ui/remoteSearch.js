@@ -1,9 +1,11 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
+const GdkPixbuf = imports.gi.GdkPixbuf;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 const Lang = imports.lang;
 const St = imports.gi.St;
+const Shell = imports.gi.Shell;
 
 const FileUtils = imports.misc.fileUtils;
 const Search = imports.ui.search;
@@ -29,89 +31,173 @@ const SearchProviderIface = <interface name="org.gnome.Shell.SearchProvider">
 </method>
 </interface>;
 
-var SearchProviderProxy = Gio.DBusProxy.makeProxyWrapper(SearchProviderIface);
+const SearchProvider2Iface = <interface name="org.gnome.Shell.SearchProvider2">
+<method name="GetInitialResultSet">
+    <arg type="as" direction="in" />
+    <arg type="as" direction="out" />
+</method>
+<method name="GetSubsearchResultSet">
+    <arg type="as" direction="in" />
+    <arg type="as" direction="in" />
+    <arg type="as" direction="out" />
+</method>
+<method name="GetResultMetas">
+    <arg type="as" direction="in" />
+    <arg type="aa{sv}" direction="out" />
+</method>
+<method name="ActivateResult">
+    <arg type="s" direction="in" />
+    <arg type="as" direction="in" />
+    <arg type="u" direction="in" />
+</method>
+<method name="LaunchSearch">
+    <arg type="as" direction="in" />
+    <arg type="u" direction="in" />
+</method>
+</interface>;
 
+var SearchProviderProxy = Gio.DBusProxy.makeProxyWrapper(SearchProviderIface);
+var SearchProvider2Proxy = Gio.DBusProxy.makeProxyWrapper(SearchProvider2Iface);
 
 function loadRemoteSearchProviders(addProviderCallback) {
-    let dataDirs = GLib.get_system_data_dirs();
-    for (let i = 0; i < dataDirs.length; i++) {
-        let path = GLib.build_filenamev([dataDirs[i], 'gnome-shell', 'search-providers']);
-        let dir = Gio.file_new_for_path(path);
-        if (!dir.query_exists(null))
-            continue;
-        loadRemoteSearchProvidersFromDir(dir, addProviderCallback);
+    let data = { loadedProviders: [],
+                 objectPaths: {},
+                 addProviderCallback: addProviderCallback };
+    FileUtils.collectFromDatadirsAsync('search-providers',
+                                       { loadedCallback: remoteProvidersLoaded,
+                                         processFile: loadRemoteSearchProvider,
+                                         data: data
+                                       });
+}
+
+function loadRemoteSearchProvider(file, info, data) {
+    let keyfile = new GLib.KeyFile();
+    let path = file.get_path();
+
+    try {
+        keyfile.load_from_file(path, 0);
+    } catch(e) {
+        return;
     }
-};
 
-function loadRemoteSearchProvidersFromDir(dir, addProviderCallback) {
-    let dirPath = dir.get_path();
-    FileUtils.listDirAsync(dir, Lang.bind(this, function(files) {
-        for (let i = 0; i < files.length; i++) {
-            let keyfile = new GLib.KeyFile();
-            let path = GLib.build_filenamev([dirPath, files[i].get_name()]);
+    if (!keyfile.has_group(KEY_FILE_GROUP))
+        return;
 
-            try {
-                keyfile.load_from_file(path, 0);
-            } catch(e) {
-                continue;
-            }
+    let remoteProvider;
+    try {
+        let group = KEY_FILE_GROUP;
+        let busName = keyfile.get_string(group, 'BusName');
+        let objectPath = keyfile.get_string(group, 'ObjectPath');
 
-            if (!keyfile.has_group(KEY_FILE_GROUP))
-                continue;
+        if (data.objectPaths[objectPath])
+            return;
 
-            let remoteProvider, title;
-            try {
-                let group = KEY_FILE_GROUP;
-                let icon = keyfile.get_string(group, 'Icon');
-                let busName = keyfile.get_string(group, 'BusName');
-                let objectPath = keyfile.get_string(group, 'ObjectPath');
-                title = keyfile.get_locale_string(group, 'Title', null);
-
-                remoteProvider = new RemoteSearchProvider(title,
-                                                          icon,
-                                                          busName,
-                                                          objectPath);
-            } catch(e) {
-                log('Failed to add search provider "%s": %s'.format(title, e.toString()));
-                continue;
-            }
-
-            addProviderCallback(remoteProvider);
+        let appInfo = null;
+        try {
+            let desktopId = keyfile.get_string(group, 'DesktopId');
+            appInfo = Gio.DesktopAppInfo.new(desktopId);
+        } catch (e) {
+            log('Ignoring search provider ' + path + ': missing DesktopId');
+            return;
         }
-    }));
 
-};
+        let version = '1';
+        try {
+            version = keyfile.get_string(group, 'Version');
+        } catch (e) {
+            // ignore error
+        }
+
+        if (version >= 2)
+            remoteProvider = new RemoteSearchProvider2(appInfo, busName, objectPath);
+        else
+            remoteProvider = new RemoteSearchProvider(appInfo, busName, objectPath);
+
+        data.objectPaths[objectPath] = remoteProvider;
+        data.loadedProviders.push(remoteProvider);
+    } catch(e) {
+        log('Failed to add search provider %s: %s'.format(path, e.toString()));
+    }
+}
+
+function remoteProvidersLoaded(loadState) {
+    let searchSettings = new Gio.Settings({ schema: Search.SEARCH_PROVIDERS_SCHEMA });
+    let sortOrder = searchSettings.get_strv('sort-order');
+
+    // Special case gnome-control-center to be always active and always first
+    sortOrder.unshift('gnome-control-center.desktop');
+
+    loadState.loadedProviders.sort(
+        function(providerA, providerB) {
+            let idxA, idxB;
+            let appIdA, appIdB;
+
+            appIdA = providerA.appInfo.get_id();
+            appIdB = providerB.appInfo.get_id();
+
+            idxA = sortOrder.indexOf(appIdA);
+            idxB = sortOrder.indexOf(appIdB);
+
+            // if no provider is found in the order, use alphabetical order
+            if ((idxA == -1) && (idxB == -1)) {
+                let nameA = providerA.appInfo.get_name();
+                let nameB = providerB.appInfo.get_name();
+
+                return GLib.utf8_collate(nameA, nameB);
+            }
+
+            // if providerA isn't found, it's sorted after providerB
+            if (idxA == -1)
+                return 1;
+
+            // if providerB isn't found, it's sorted after providerA
+            if (idxB == -1)
+                return -1;
+
+            // finally, if both providers are found, return their order in the list
+            return (idxA - idxB);
+        });
+
+    loadState.loadedProviders.forEach(
+        function(provider) {
+            loadState.addProviderCallback(provider);
+        });
+}
 
 const RemoteSearchProvider = new Lang.Class({
     Name: 'RemoteSearchProvider',
-    Extends: Search.SearchProvider,
 
-    _init: function(title, icon, dbusName, dbusPath) {
-        this._proxy = new SearchProviderProxy(Gio.DBus.session,
-                                              dbusName, dbusPath);
+    _init: function(appInfo, dbusName, dbusPath, proxyType) {
+        if (!proxyType)
+            proxyType = SearchProviderProxy;
 
-        this.parent(title.toUpperCase());
-        this.async = true;
+        this.proxy = new proxyType(Gio.DBus.session,
+                dbusName, dbusPath, Lang.bind(this, this._onProxyConstructed));
+
+        this.appInfo = appInfo;
+        this.id = appInfo.get_id();
+        this.isRemoteProvider = true;
+
         this._cancellable = new Gio.Cancellable();
     },
 
+    _onProxyConstructed: function(proxy) {
+        // Do nothing
+    },
+
     createIcon: function(size, meta) {
+        let gicon;
         if (meta['gicon']) {
-            return new St.Icon({ gicon: Gio.icon_new_for_string(meta['gicon']),
-                                 icon_size: size,
-                                 icon_type: St.IconType.FULLCOLOR });
+            gicon = Gio.icon_new_for_string(meta['gicon']);
         } else if (meta['icon-data']) {
             let [width, height, rowStride, hasAlpha,
                  bitsPerSample, nChannels, data] = meta['icon-data'];
-            let textureCache = St.TextureCache.get_default();
-            return textureCache.load_from_raw(data, hasAlpha,
-                                              width, height, rowStride, size);
+            gicon = Shell.util_create_pixbuf_from_data(data, GdkPixbuf.Colorspace.RGB, hasAlpha,
+                                                       bitsPerSample, width, height, rowStride);
         }
 
-        // Ugh, but we want to fall back to something ...
-        return new St.Icon({ icon_name: 'text-x-generic',
-                             icon_size: size,
-                             icon_type: St.IconType.FULLCOLOR });
+        return new St.Icon({ gicon: gicon,
+                             icon_size: size });
     },
 
     _getResultsFinished: function(results, error) {
@@ -120,28 +206,28 @@ const RemoteSearchProvider = new Lang.Class({
         this.searchSystem.pushResults(this, results[0]);
     },
 
-    getInitialResultSetAsync: function(terms) {
+    getInitialResultSet: function(terms) {
         this._cancellable.cancel();
         this._cancellable.reset();
         try {
-            this._proxy.GetInitialResultSetRemote(terms,
-                                                  Lang.bind(this, this._getResultsFinished),
-                                                  this._cancellable);
+            this.proxy.GetInitialResultSetRemote(terms,
+                                                 Lang.bind(this, this._getResultsFinished),
+                                                 this._cancellable);
         } catch(e) {
-            log('Error calling GetInitialResultSet for provider %s: %s'.format( this.title, e.toString()));
+            log('Error calling GetInitialResultSet for provider %s: %s'.format(this.id, e.toString()));
             this.searchSystem.pushResults(this, []);
         }
     },
 
-    getSubsearchResultSetAsync: function(previousResults, newTerms) {
+    getSubsearchResultSet: function(previousResults, newTerms) {
         this._cancellable.cancel();
         this._cancellable.reset();
         try {
-            this._proxy.GetSubsearchResultSetRemote(previousResults, newTerms,
-                                                    Lang.bind(this, this._getResultsFinished),
-                                                    this._cancellable);
+            this.proxy.GetSubsearchResultSetRemote(previousResults, newTerms,
+                                                   Lang.bind(this, this._getResultsFinished),
+                                                   this._cancellable);
         } catch(e) {
-            log('Error calling GetSubsearchResultSet for provider %s: %s'.format(this.title, e.toString()));
+            log('Error calling GetSubsearchResultSet for provider %s: %s'.format(this.id, e.toString()));
             this.searchSystem.pushResults(this, []);
         }
     },
@@ -158,28 +244,53 @@ const RemoteSearchProvider = new Lang.Class({
                 metas[i][prop] = metas[i][prop].deep_unpack();
             resultMetas.push({ id: metas[i]['id'],
                                name: metas[i]['name'],
+                               description: metas[i]['description'],
                                createIcon: Lang.bind(this,
                                                      this.createIcon, metas[i]) });
         }
         callback(resultMetas);
     },
 
-    getResultMetasAsync: function(ids, callback) {
+    getResultMetas: function(ids, callback) {
         this._cancellable.cancel();
         this._cancellable.reset();
         try {
-            this._proxy.GetResultMetasRemote(ids,
-                                             Lang.bind(this, this._getResultMetasFinished, callback),
-                                             this._cancellable);
+            this.proxy.GetResultMetasRemote(ids,
+                                            Lang.bind(this, this._getResultMetasFinished, callback),
+                                            this._cancellable);
         } catch(e) {
-            log('Error calling GetResultMetas for provider %s: %s'.format(this.title, e.toString()));
+            log('Error calling GetResultMetas for provider %s: %s'.format(this.id, e.toString()));
             callback([]);
         }
     },
 
     activateResult: function(id) {
-        this._proxy.ActivateResultRemote(id);
+        this.proxy.ActivateResultRemote(id);
+    },
+
+    launchSearch: function(terms) {
+        // the provider is not compatible with the new version of the interface, launch
+        // the app itself but warn so we can catch the error in logs
+        log('Search provider ' + this.appInfo.get_id() + ' does not implement LaunchSearch');
+        this.appInfo.launch([], global.create_app_launch_context());
     }
 });
 
+const RemoteSearchProvider2 = new Lang.Class({
+    Name: 'RemoteSearchProvider2',
+    Extends: RemoteSearchProvider,
 
+    _init: function(appInfo, dbusName, dbusPath) {
+        this.parent(appInfo, dbusName, dbusPath, SearchProvider2Proxy);
+
+        this.canLaunchSearch = true;
+    },
+
+    activateResult: function(id, terms) {
+        this.proxy.ActivateResultRemote(id, terms, global.get_current_time());
+    },
+
+    launchSearch: function(terms) {
+        this.proxy.LaunchSearchRemote(terms, global.get_current_time());
+    }
+});

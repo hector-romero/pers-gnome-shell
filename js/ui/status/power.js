@@ -2,16 +2,12 @@
 
 const Gio = imports.gi.Gio;
 const Lang = imports.lang;
-const Mainloop = imports.mainloop;
-const Shell = imports.gi.Shell;
 const St = imports.gi.St;
 
-const Main = imports.ui.main;
 const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
-const Util = imports.misc.util;
 
-const BUS_NAME = 'org.gnome.SettingsDaemon';
+const BUS_NAME = 'org.gnome.SettingsDaemon.Power';
 const OBJECT_PATH = '/org/gnome/SettingsDaemon/Power';
 
 const UPDeviceType = {
@@ -56,16 +52,25 @@ const Indicator = new Lang.Class({
     Extends: PanelMenu.SystemStatusButton,
 
     _init: function() {
-        this.parent('battery-missing', _("Battery"));
+        this.parent('battery-missing-symbolic', _("Battery"));
 
-        this._proxy = new PowerManagerProxy(Gio.DBus.session, BUS_NAME, OBJECT_PATH);
+        this._proxy = new PowerManagerProxy(Gio.DBus.session, BUS_NAME, OBJECT_PATH,
+                                           Lang.bind(this, function(proxy, error) {
+                                               if (error) {
+                                                   log(error.message);
+                                                   return;
+                                               }
+                                               this._proxy.connect('g-properties-changed',
+                                                                   Lang.bind(this, this._devicesChanged));
+                                               this._devicesChanged();
+                                           }));
 
         this._deviceItems = [ ];
         this._hasPrimary = false;
         this._primaryDeviceId = null;
 
         this._batteryItem = new PopupMenu.PopupMenuItem('', { reactive: false });
-        this._primaryPercentage = new St.Label();
+        this._primaryPercentage = new St.Label({ style_class: 'popup-battery-percentage' });
         this._batteryItem.addActor(this._primaryPercentage, { align: St.Align.END });
         this.menu.addMenuItem(this._batteryItem);
 
@@ -74,10 +79,6 @@ const Indicator = new Lang.Class({
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addSettingsAction(_("Power Settings"), 'gnome-power-panel.desktop');
-
-        this._proxy.connect('g-properties-changed',
-                            Lang.bind(this, this._devicesChanged));
-        this._devicesChanged();
     },
 
     _readPrimaryDevice: function() {
@@ -95,12 +96,12 @@ const Indicator = new Lang.Class({
                 if (time == 0) {
                     // 0 is reported when UPower does not have enough data
                     // to estimate battery life
-                    this._batteryItem.label.text = _("Estimating...");
+                    this._batteryItem.label.text = _("Estimating…");
                 } else {
                     let minutes = time % 60;
                     let hours = Math.floor(time / 60);
                     let timestring;
-                    if (time > 60) {
+                    if (time >= 60) {
                         if (minutes == 0) {
                             timestring = ngettext("%d hour remaining", "%d hours remaining", hours).format(hours);
                         } else {
@@ -148,16 +149,21 @@ const Indicator = new Lang.Class({
         }));
     },
 
-    _devicesChanged: function() {
+    _syncIcon: function() {
         let icon = this._proxy.Icon;
+        let hasIcon = false;
+
         if (icon) {
             let gicon = Gio.icon_new_for_string(icon);
             this.setGIcon(gicon);
-            this.actor.show();
-        } else {
-            this.menu.close();
-            this.actor.hide();
+            hasIcon = true;
         }
+        this.mainIcon.visible = hasIcon;
+        this.actor.visible = hasIcon;
+    },
+
+    _devicesChanged: function() {
+        this._syncIcon();
         this._readPrimaryDevice();
         this._readOtherDevices();
     }
@@ -176,23 +182,25 @@ const DeviceItem = new Lang.Class({
         this._label = new St.Label({ text: this._deviceTypeToString(device_type) });
 
         this._icon = new St.Icon({ gicon: Gio.icon_new_for_string(icon),
-                                   icon_type: St.IconType.SYMBOLIC,
                                    style_class: 'popup-menu-icon' });
 
         this._box.add_actor(this._icon);
         this._box.add_actor(this._label);
         this.addActor(this._box);
 
-        let percentLabel = new St.Label({ text: C_("percent of battery remaining", "%d%%").format(Math.round(percentage)) });
+        let percentLabel = new St.Label({ text: C_("percent of battery remaining", "%d%%").format(Math.round(percentage)),
+                                          style_class: 'popup-battery-percentage' });
         this.addActor(percentLabel, { align: St.Align.END });
+        //FIXME: ideally we would like to expose this._label and percentLabel
+        this.actor.label_actor = percentLabel;
     },
 
     _deviceTypeToString: function(type) {
 	switch (type) {
 	case UPDeviceType.AC_POWER:
-            return _("AC adapter");
+            return _("AC Adapter");
         case UPDeviceType.BATTERY:
-            return _("Laptop battery");
+            return _("Laptop Battery");
         case UPDeviceType.UPS:
             return _("UPS");
         case UPDeviceType.MONITOR:
@@ -204,15 +212,15 @@ const DeviceItem = new Lang.Class({
         case UPDeviceType.PDA:
             return _("PDA");
         case UPDeviceType.PHONE:
-            return _("Cell phone");
+            return _("Cell Phone");
         case UPDeviceType.MEDIA_PLAYER:
-            return _("Media player");
+            return _("Media Player");
         case UPDeviceType.TABLET:
             return _("Tablet");
         case UPDeviceType.COMPUTER:
             return _("Computer");
         default:
-            return _("Unknown");
+            return C_("device", "Unknown");
         }
     }
 });

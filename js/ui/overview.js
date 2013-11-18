@@ -10,41 +10,30 @@ const St = imports.gi.St;
 const Shell = imports.gi.Shell;
 const Gdk = imports.gi.Gdk;
 
-const AppDisplay = imports.ui.appDisplay;
+const Background = imports.ui.background;
 const Dash = imports.ui.dash;
 const DND = imports.ui.dnd;
-const Lightbox = imports.ui.lightbox;
+const LayoutManager = imports.ui.layout;
 const Main = imports.ui.main;
 const MessageTray = imports.ui.messageTray;
+const OverviewControls = imports.ui.overviewControls;
 const Panel = imports.ui.panel;
 const Params = imports.misc.params;
-const PlaceDisplay = imports.ui.placeDisplay;
-const RemoteSearch = imports.ui.remoteSearch;
 const Tweener = imports.ui.tweener;
 const ViewSelector = imports.ui.viewSelector;
-const Wanda = imports.ui.wanda;
-const WorkspacesView = imports.ui.workspacesView;
 const WorkspaceThumbnail = imports.ui.workspaceThumbnail;
 
 // Time for initial animation going into Overview mode
 const ANIMATION_TIME = 0.25;
 
-// We split the screen vertically between the dash and the view selector.
-const DASH_SPLIT_FRACTION = 0.1;
+// Must be less than ANIMATION_TIME, since we switch to
+// or from the overview completely after ANIMATION_TIME,
+// and don't want the shading animation to get cut off
+const SHADE_ANIMATION_TIME = .20;
 
-const DND_WINDOW_SWITCH_TIMEOUT = 1250;
+const DND_WINDOW_SWITCH_TIMEOUT = 750;
 
-const SwipeScrollDirection = {
-    NONE: 0,
-    HORIZONTAL: 1,
-    VERTICAL: 2
-};
-
-const SwipeScrollResult = {
-    CANCEL: 0,
-    SWIPE: 1,
-    CLICK: 2
-};
+const OVERVIEW_ACTIVATION_TIMEOUT = 0.5;
 
 const ShellInfo = new Lang.Class({
     Name: 'ShellInfo',
@@ -63,7 +52,14 @@ const ShellInfo = new Lang.Class({
             this._source.destroy();
     },
 
-    setMessage: function(text, undoCallback, undoLabel) {
+    setMessage: function(text, options) {
+        options = Params.parse(options, { undoCallback: null,
+                                          forFeedback: false
+                                        });
+
+        let undoCallback = options.undoCallback;
+        let forFeedback = options.forFeedback;
+
         if (this._source == null) {
             this._source = new MessageTray.SystemNotificationSource();
             this._source.connect('destroy', Lang.bind(this,
@@ -76,19 +72,17 @@ const ShellInfo = new Lang.Class({
         let notification = null;
         if (this._source.notifications.length == 0) {
             notification = new MessageTray.Notification(this._source, text, null);
+            notification.setTransient(true);
+            notification.setForFeedback(forFeedback);
         } else {
             notification = this._source.notifications[0];
             notification.update(text, null, { clear: true });
         }
 
-        notification.setTransient(true);
-
         this._undoCallback = undoCallback;
         if (undoCallback) {
-            notification.addButton('system-undo',
-                                   undoLabel ? undoLabel : _("Undo"));
-            notification.connect('action-invoked',
-                                 Lang.bind(this, this._onUndoClicked));
+            notification.addButton('system-undo', _("Undo"));
+            notification.connect('action-invoked', Lang.bind(this, this._onUndoClicked));
         }
 
         this._source.notify(notification);
@@ -98,74 +92,79 @@ const ShellInfo = new Lang.Class({
 const Overview = new Lang.Class({
     Name: 'Overview',
 
-    _init : function(params) {
-        params = Params.parse(params, { isDummy: false });
+    _init: function() {
+        this._overviewCreated = false;
+        this._initCalled = false;
 
-        this.isDummy = params.isDummy;
+        Main.sessionMode.connect('updated', Lang.bind(this, this._sessionUpdated));
+        this._sessionUpdated();
+    },
 
-        // We only have an overview in user sessions, so
-        // create a dummy overview in other cases
-        if (this.isDummy) {
-            this.animationInProgress = false;
-            this.visible = false;
+    _createOverview: function() {
+        if (this._overviewCreated)
             return;
-        }
 
-        // The main BackgroundActor is inside global.window_group which is
+        if (this.isDummy)
+            return;
+
+        this._overviewCreated = true;
+
+        // The main Background actors are inside global.window_group which are
         // hidden when displaying the overview, so we create a new
         // one. Instances of this class share a single CoglTexture behind the
         // scenes which allows us to show the background with different
         // rendering options without duplicating the texture data.
-        this._background = Meta.BackgroundActor.new_for_screen(global.screen);
-        this._background.hide();
-        global.overlay_group.add_actor(this._background);
+        let monitor = Main.layoutManager.primaryMonitor;
 
         this._desktopFade = new St.Bin();
         global.overlay_group.add_actor(this._desktopFade);
 
-        this._spacing = 0;
+        let layout = new Clutter.BinLayout();
+        this._stack = new Clutter.Actor({ layout_manager: layout });
+        this._stack.add_constraint(new LayoutManager.MonitorConstraint({ primary: true }));
 
         /* Translators: This is the main view to select
            activities. See also note for "Activities" string. */
-        this._group = new St.Widget({ name: 'overview',
-                                      accessible_name: _("Overview"),
-                                      reactive: true });
-        this._group._delegate = this;
-        this._group.connect('style-changed',
-            Lang.bind(this, function() {
-                let node = this._group.get_theme_node();
-                let spacing = node.get_length('spacing');
-                if (spacing != this._spacing) {
-                    this._spacing = spacing;
-                    this._relayout();
-                }
-            }));
+        this._overview = new St.BoxLayout({ name: 'overview',
+                                            accessible_name: _("Overview"),
+                                            reactive: true,
+                                            vertical: true,
+                                            x_expand: true,
+                                            y_expand: true });
+        this._overview._delegate = this;
 
-        this._scrollDirection = SwipeScrollDirection.NONE;
-        this._scrollAdjustment = null;
-        this._capturedEventId = 0;
-        this._buttonPressId = 0;
+        this._groupStack = new St.Widget({ layout_manager: new Clutter.BinLayout(),
+                                           x_expand: true, y_expand: true,
+                                           clip_to_allocation: true });
+        this._group = new St.BoxLayout({ name: 'overview-group',
+                                         reactive: true,
+                                         x_expand: true, y_expand: true });
+        this._groupStack.add_actor(this._group);
 
-        this._workspacesDisplay = null;
+        this._backgroundGroup = new Meta.BackgroundGroup();
+        global.overlay_group.add_child(this._backgroundGroup);
+        this._backgroundGroup.hide();
+        this._bgManagers = [];
+
+        this._activationTime = 0;
 
         this.visible = false;           // animating to overview, in overview, animating out
         this._shown = false;            // show() and not hide()
-        this._shownTemporarily = false; // showTemporarily() and not hideTemporarily()
         this._modal = false;            // have a modal grab
         this.animationInProgress = false;
-        this._hideInProgress = false;
+        this.visibleTarget = false;
 
         // During transitions, we raise this to the top to avoid having the overview
         // area be reactive; it causes too many issues such as double clicks on
         // Dash elements, or mouseover handlers in the workspaces.
         this._coverPane = new Clutter.Rectangle({ opacity: 0,
                                                   reactive: true });
-        this._group.add_actor(this._coverPane);
+        this._overview.add_actor(this._coverPane);
         this._coverPane.connect('event', Lang.bind(this, function (actor, event) { return true; }));
 
-
-        this._group.hide();
-        global.overlay_group.add_actor(this._group);
+        this._stack.hide();
+        this._stack.add_actor(this._overview);
+        global.overlay_group.add_actor(this._stack);
 
         this._coverPane.hide();
 
@@ -177,11 +176,72 @@ const Overview = new Lang.Class({
         Main.xdndHandler.connect('drag-begin', Lang.bind(this, this._onDragBegin));
         Main.xdndHandler.connect('drag-end', Lang.bind(this, this._onDragEnd));
 
+        global.screen.connect('restacked', Lang.bind(this, this._onRestacked));
+        this._group.connect('scroll-event', Lang.bind(this, this._onScrollEvent));
+
         this._windowSwitchTimeoutId = 0;
         this._windowSwitchTimestamp = 0;
         this._lastActiveWorkspaceIndex = -1;
         this._lastHoveredWindow = null;
         this._needsFakePointerEvent = false;
+
+        if (this._initCalled)
+            this.init();
+    },
+
+    _updateBackgrounds: function() {
+        for (let i = 0; i < this._bgManagers.length; i++)
+            this._bgManagers[i].destroy();
+
+        this._bgManagers = [];
+
+        for (let i = 0; i < Main.layoutManager.monitors.length; i++) {
+            let bgManager = new Background.BackgroundManager({ container: this._backgroundGroup,
+                                                               monitorIndex: i,
+                                                               effects: Meta.BackgroundEffects.VIGNETTE });
+            this._bgManagers.push(bgManager);
+        }
+    },
+
+    _unshadeBackgrounds: function() {
+        let backgrounds = this._backgroundGroup.get_children();
+        for (let i = 0; i < backgrounds.length; i++) {
+            let background = backgrounds[i]._delegate;
+
+            Tweener.addTween(background,
+                             { brightness: 1.0,
+                               time: SHADE_ANIMATION_TIME,
+                               transition: 'easeOutQuad'
+                             });
+            Tweener.addTween(background,
+                             { vignetteSharpness: 0.0,
+                               time: SHADE_ANIMATION_TIME,
+                               transition: 'easeOutQuad'
+                             });
+        }
+    },
+
+    _shadeBackgrounds: function() {
+        let backgrounds = this._backgroundGroup.get_children();
+        for (let i = 0; i < backgrounds.length; i++) {
+            let background = backgrounds[i]._delegate;
+
+            Tweener.addTween(background,
+                             { brightness: 0.8,
+                               time: SHADE_ANIMATION_TIME,
+                               transition: 'easeOutQuad'
+                             });
+            Tweener.addTween(background,
+                             { vignetteSharpness: 0.7,
+                               time: SHADE_ANIMATION_TIME,
+                               transition: 'easeOutQuad'
+                             });
+        }
+    },
+
+    _sessionUpdated: function() {
+        this.isDummy = !Main.sessionMode.hasOverview;
+        this._createOverview();
     },
 
     // The members we construct that are implemented in JS might
@@ -189,44 +249,64 @@ const Overview = new Lang.Class({
     // signal handlers and so forth. So we create them after
     // construction in this init() method.
     init: function() {
+        this._initCalled = true;
+
         if (this.isDummy)
             return;
 
         this._shellInfo = new ShellInfo();
 
-        this._viewSelector = new ViewSelector.ViewSelector();
-        this._group.add_actor(this._viewSelector.actor);
+        // Add a clone of the panel to the overview so spacing and such is
+        // automatic
+        this._panelGhost = new St.Bin({ child: new Clutter.Clone({ source: Main.panel.actor }),
+                                        reactive: false,
+                                        opacity: 0 });
+        this._overview.add_actor(this._panelGhost);
 
-        this._workspacesDisplay = new WorkspacesView.WorkspacesDisplay();
-        this._viewSelector.addViewTab('windows', _("Windows"), this._workspacesDisplay.actor, 'text-x-generic');
+        this._searchEntry = new St.Entry({ name: 'searchEntry',
+                                           /* Translators: this is the text displayed
+                                              in the search entry when no search is
+                                              active; it should not exceed ~30
+                                              characters. */
+                                           hint_text: _("Type to search…"),
+                                           track_hover: true,
+                                           can_focus: true });
+        this._searchEntryBin = new St.Bin({ child: this._searchEntry,
+                                            x_align: St.Align.MIDDLE });
+        this._overview.add_actor(this._searchEntryBin);
 
-        let appView = new AppDisplay.AllAppDisplay();
-        this._viewSelector.addViewTab('applications', _("Applications"), appView.actor, 'system-run');
+        // Create controls
+        this._dash = new Dash.Dash();
+        this._viewSelector = new ViewSelector.ViewSelector(this._searchEntry,
+                                                           this._dash.showAppsButton);
+        this._thumbnailsBox = new WorkspaceThumbnail.ThumbnailsBox();
+        this._controls = new OverviewControls.ControlsManager(this._dash,
+                                                              this._thumbnailsBox,
+                                                              this._viewSelector);
 
-        // Default search providers
-        // Wanda comes obviously first
-        this.addSearchProvider(new Wanda.WandaSearchProvider());
-        this.addSearchProvider(new AppDisplay.AppSearchProvider());
-        this.addSearchProvider(new AppDisplay.SettingsSearchProvider());
-        this.addSearchProvider(new PlaceDisplay.PlaceSearchProvider());
+        this._controls.dashActor.x_align = Clutter.ActorAlign.START;
+        this._controls.dashActor.y_expand = true;
 
-        // Load remote search providers provided by applications
-        RemoteSearch.loadRemoteSearchProviders(Lang.bind(this, this.addSearchProvider));
+        // Put the dash in a separate layer to allow content to be centered
+        this._groupStack.add_actor(this._controls.dashActor);
+
+        // Pack all the actors into the group
+        this._group.add_actor(this._controls.dashSpacer);
+        this._group.add(this._viewSelector.actor, { x_fill: true,
+                                                    expand: true });
+        this._group.add_actor(this._controls.thumbnailsActor);
+
+        // Add our same-line elements after the search entry
+        this._overview.add(this._groupStack, { y_fill: true, expand: true });
+
+        this._stack.add_actor(this._controls.indicatorActor);
 
         // TODO - recalculate everything when desktop size changes
-        this._dash = new Dash.Dash();
-        this._group.add_actor(this._dash.actor);
-        this._dash.actor.add_constraint(this._viewSelector.constrainY);
-        this._dash.actor.add_constraint(this._viewSelector.constrainHeight);
         this.dashIconSize = this._dash.iconSize;
         this._dash.connect('icon-size-changed',
                            Lang.bind(this, function() {
                                this.dashIconSize = this._dash.iconSize;
                            }));
-
-        // Translators: this is the name of the dock/favorites area on
-        // the left of the overview
-        Main.ctrlAltTabManager.addGroup(this._dash.actor, _("Dash"), 'user-bookmarks');
 
         Main.layoutManager.connect('monitors-changed', Lang.bind(this, this._relayout));
         this._relayout();
@@ -240,26 +320,35 @@ const Overview = new Lang.Class({
         this._viewSelector.removeSearchProvider(provider);
     },
 
-    setMessage: function(text, undoCallback, undoLabel) {
+    //
+    // options:
+    //  - undoCallback (function): the callback to be called if undo support is needed
+    //  - forFeedback (boolean): whether the message is for direct feedback of a user action
+    //
+    setMessage: function(text, options) {
         if (this.isDummy)
             return;
 
-        this._shellInfo.setMessage(text, undoCallback, undoLabel);
+        this._shellInfo.setMessage(text, options);
     },
 
     _onDragBegin: function() {
+        this._inXdndDrag = true;
+
         DND.addDragMonitor(this._dragMonitor);
         // Remember the workspace we started from
         this._lastActiveWorkspaceIndex = global.screen.get_active_workspace_index();
     },
 
     _onDragEnd: function(time) {
+        this._inXdndDrag = false;
+
         // In case the drag was canceled while in the overview
         // we have to go back to where we started and hide
         // the overview
-        if (this._shownTemporarily)  {
+        if (this._shown) {
             global.screen.get_workspace_by_index(this._lastActiveWorkspaceIndex).activate(time);
-            this.hideTemporarily();
+            this.hide();
         }
         this._resetWindowSwitchTimeout();
         this._lastHoveredWindow = null;
@@ -307,7 +396,7 @@ const Overview = new Lang.Class({
                                                 this._needsFakePointerEvent = true;
                                                 Main.activateWindow(dragEvent.targetActor._delegate.metaWindow,
                                                                     this._windowSwitchTimestamp);
-                                                this.hideTemporarily();
+                                                this.hide();
                                                 this._lastHoveredWindow = null;
                                             }));
         }
@@ -315,159 +404,15 @@ const Overview = new Lang.Class({
         return DND.DragMotionResult.CONTINUE;
     },
 
-    setScrollAdjustment: function(adjustment, direction) {
+    _onScrollEvent: function(actor, event) {
+        this.emit('scroll-event', event);
+    },
+
+    addAction: function(action) {
         if (this.isDummy)
             return;
 
-        this._scrollAdjustment = adjustment;
-        if (this._scrollAdjustment == null)
-            this._scrollDirection = SwipeScrollDirection.NONE;
-        else
-            this._scrollDirection = direction;
-    },
-
-    _onButtonPress: function(actor, event) {
-        if (this._scrollDirection == SwipeScrollDirection.NONE
-            || event.get_button() != 1)
-            return;
-
-        let [stageX, stageY] = event.get_coords();
-        this._dragStartX = this._dragX = stageX;
-        this._dragStartY = this._dragY = stageY;
-        this._dragStartValue = this._scrollAdjustment.value;
-        this._lastMotionTime = -1; // used to track "stopping" while swipe-scrolling
-        this._capturedEventId = global.stage.connect('captured-event',
-            Lang.bind(this, this._onCapturedEvent));
-        this.emit('swipe-scroll-begin');
-    },
-
-    _onCapturedEvent: function(actor, event) {
-        let stageX, stageY;
-        let threshold = Gtk.Settings.get_default().gtk_dnd_drag_threshold;
-
-        switch(event.type()) {
-            case Clutter.EventType.BUTTON_RELEASE:
-                [stageX, stageY] = event.get_coords();
-
-                // default to snapping back to the original value
-                let newValue = this._dragStartValue;
-
-                let minValue = this._scrollAdjustment.lower;
-                let maxValue = this._scrollAdjustment.upper - this._scrollAdjustment.page_size;
-
-                let direction;
-                if (this._scrollDirection == SwipeScrollDirection.HORIZONTAL) {
-                    direction = stageX > this._dragStartX ? -1 : 1;
-                    if (Clutter.get_default_text_direction() == Clutter.TextDirection.RTL)
-                        direction *= -1;
-                } else {
-                    direction = stageY > this._dragStartY ? -1 : 1;
-                }
-
-                // We default to scroll a full page size; both the first
-                // and the last page may be smaller though, so we need to
-                // adjust difference in those cases.
-                let difference = direction * this._scrollAdjustment.page_size;
-                if (this._dragStartValue + difference > maxValue)
-                    difference = maxValue - this._dragStartValue;
-                else if (this._dragStartValue + difference < minValue)
-                    difference = minValue - this._dragStartValue;
-
-                // If the user has moved more than half the scroll
-                // difference, we want to "settle" to the new value
-                // even if the user stops dragging rather "throws" by
-                // releasing during the drag.
-                let distance = this._dragStartValue - this._scrollAdjustment.value;
-                let noStop = Math.abs(distance / difference) > 0.5;
-
-                // We detect if the user is stopped by comparing the
-                // timestamp of the button release with the timestamp of
-                // the last motion. Experimentally, a difference of 0 or 1
-                // millisecond indicates that the mouse is in motion, a
-                // larger difference indicates that the mouse is stopped.
-                if ((this._lastMotionTime > 0 &&
-                     this._lastMotionTime > event.get_time() - 2) ||
-                    noStop) {
-                    if (this._dragStartValue + difference >= minValue &&
-                        this._dragStartValue + difference <= maxValue)
-                        newValue += difference;
-                }
-
-                let result;
-
-                // See if the user has moved the mouse enough to trigger
-                // a drag
-                if (Math.abs(stageX - this._dragStartX) < threshold &&
-                    Math.abs(stageY - this._dragStartY) < threshold) {
-                    // no motion? It's a click!
-                    result = SwipeScrollResult.CLICK;
-                    this.emit('swipe-scroll-end', result);
-                } else {
-                    if (newValue == this._dragStartValue)
-                        result = SwipeScrollResult.CANCEL;
-                    else
-                        result = SwipeScrollResult.SWIPE;
-
-                    // The event capture handler is disconnected
-                    // while scrolling to the final position, so
-                    // to avoid undesired prelights we raise
-                    // the cover pane.
-                    this._coverPane.raise_top();
-                    this._coverPane.show();
-
-                    Tweener.addTween(this._scrollAdjustment,
-                                     { value: newValue,
-                                       time: ANIMATION_TIME,
-                                       transition: 'easeOutQuad',
-                                       onCompleteScope: this,
-                                       onComplete: function() {
-                                          this._coverPane.hide();
-                                          this.emit('swipe-scroll-end',
-                                                    result);
-                                       }
-                                     });
-                }
-
-                global.stage.disconnect(this._capturedEventId);
-                this._capturedEventId = 0;
-
-                return result != SwipeScrollResult.CLICK;
-
-            case Clutter.EventType.MOTION:
-                [stageX, stageY] = event.get_coords();
-                let dx = this._dragX - stageX;
-                let dy = this._dragY - stageY;
-                let primary = Main.layoutManager.primaryMonitor;
-
-                this._dragX = stageX;
-                this._dragY = stageY;
-                this._lastMotionTime = event.get_time();
-
-                // See if the user has moved the mouse enough to trigger
-                // a drag
-                if (Math.abs(stageX - this._dragStartX) < threshold &&
-                    Math.abs(stageY - this._dragStartY) < threshold)
-                    return true;
-
-                if (this._scrollDirection == SwipeScrollDirection.HORIZONTAL) {
-                    if (Clutter.get_default_text_direction() == Clutter.TextDirection.RTL)
-                        this._scrollAdjustment.value -= (dx / primary.width) * this._scrollAdjustment.page_size;
-                    else
-                        this._scrollAdjustment.value += (dx / primary.width) * this._scrollAdjustment.page_size;
-                } else {
-                    this._scrollAdjustment.value += (dy / primary.height) * this._scrollAdjustment.page_size;
-                }
-
-                return true;
-
-            // Block enter/leave events to avoid prelights
-            // during swipe-scroll
-            case Clutter.EventType.ENTER:
-            case Clutter.EventType.LEAVE:
-                return true;
-        }
-
-        return false;
+        this._overview.add_action(action);
     },
 
     _getDesktopClone: function() {
@@ -477,7 +422,9 @@ const Overview = new Lang.Class({
         if (windows.length == 0)
             return null;
 
-        let clone = new Clutter.Clone({ source: windows[0].get_texture() });
+        let window = windows[0];
+        let clone = new Clutter.Clone({ source: window.get_texture(),
+                                        x: window.x, y: window.y });
         clone.source.connect('destroy', Lang.bind(this, function() {
             clone.destroy();
         }));
@@ -490,42 +437,31 @@ const Overview = new Lang.Class({
         // when it is next shown.
         this.hide();
 
-        let primary = Main.layoutManager.primaryMonitor;
-        let rtl = (Clutter.get_default_text_direction() == Clutter.TextDirection.RTL);
+        let workArea = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
 
-        let contentY = Main.panel.actor.height;
-        let contentHeight = primary.height - contentY - Main.messageTray.actor.height;
+        this._coverPane.set_position(0, workArea.y);
+        this._coverPane.set_size(workArea.width, workArea.height);
 
-        this._group.set_position(primary.x, primary.y);
-        this._group.set_size(primary.width, primary.height);
+        this._updateBackgrounds();
+    },
 
-        this._coverPane.set_position(0, contentY);
-        this._coverPane.set_size(primary.width, contentHeight);
+    _onRestacked: function() {
+        let stack = global.get_window_actors();
+        let stackIndices = {};
 
-        let dashWidth = Math.round(DASH_SPLIT_FRACTION * primary.width);
-        let viewWidth = primary.width - dashWidth - this._spacing;
-        let viewHeight = contentHeight - 2 * this._spacing;
-        let viewY = contentY + this._spacing;
-        let viewX = rtl ? 0 : dashWidth + this._spacing;
-
-        // Set the dash's x position - y is handled by a constraint
-        let dashX;
-        if (rtl) {
-            this._dash.actor.set_anchor_point_from_gravity(Clutter.Gravity.NORTH_EAST);
-            dashX = primary.width;
-        } else {
-            dashX = 0;
+        for (let i = 0; i < stack.length; i++) {
+            // Use the stable sequence for an integer to use as a hash key
+            stackIndices[stack[i].get_meta_window().get_stable_sequence()] = i;
         }
-        this._dash.actor.set_x(dashX);
 
-        this._viewSelector.actor.set_position(viewX, viewY);
-        this._viewSelector.actor.set_size(viewWidth, viewHeight);
+        this.emit('windows-restacked', stackIndices);
     },
 
     //// Public methods ////
 
     beginItemDrag: function(source) {
         this.emit('item-drag-begin');
+        this._inDrag = true;
     },
 
     cancelledItemDrag: function(source) {
@@ -534,10 +470,12 @@ const Overview = new Lang.Class({
 
     endItemDrag: function(source) {
         this.emit('item-drag-end');
+        this._inDrag = false;
     },
 
     beginWindowDrag: function(source) {
         this.emit('window-drag-begin');
+        this._inDrag = true;
     },
 
     cancelledWindowDrag: function(source) {
@@ -546,6 +484,7 @@ const Overview = new Lang.Class({
 
     endWindowDrag: function(source) {
         this.emit('window-drag-end');
+        this._inDrag = false;
     },
 
     // show:
@@ -556,15 +495,39 @@ const Overview = new Lang.Class({
             return;
         if (this._shown)
             return;
-        // Do this manually instead of using _syncInputMode, to handle failure
-        if (!Main.pushModal(this._group))
-            return;
-        this._modal = true;
-        this._animateVisible();
         this._shown = true;
 
-        this._buttonPressId = this._group.connect('button-press-event',
-            Lang.bind(this, this._onButtonPress));
+        if (!this._syncInputMode())
+            return;
+
+        this._animateVisible();
+    },
+
+    focusSearch: function() {
+        this.show();
+        this._searchEntry.grab_key_focus();
+    },
+
+    fadeInDesktop: function() {
+            this._desktopFade.opacity = 0;
+            this._desktopFade.show();
+            Tweener.addTween(this._desktopFade,
+                             { opacity: 255,
+                               time: ANIMATION_TIME,
+                               transition: 'easeOutQuad' });
+    },
+
+    fadeOutDesktop: function() {
+        if (!this._desktopFade.child)
+            this._desktopFade.child = this._getDesktopClone();
+
+        this._desktopFade.opacity = 255;
+        this._desktopFade.show();
+        Tweener.addTween(this._desktopFade,
+                         { opacity: 0,
+                           time: ANIMATION_TIME,
+                           transition: 'easeOutQuad'
+                         });
     },
 
     _animateVisible: function() {
@@ -573,6 +536,8 @@ const Overview = new Lang.Class({
 
         this.visible = true;
         this.animationInProgress = true;
+        this.visibleTarget = true;
+        this._activationTime = Date.now() / 1000;
 
         // All the the actors in the window group are completely obscured,
         // hiding the group holding them while the Overview is displayed greatly
@@ -584,61 +549,23 @@ const Overview = new Lang.Class({
         //
         // Disable unredirection while in the overview
         Meta.disable_unredirect_for_screen(global.screen);
-        global.window_group.hide();
-        this._group.show();
-        this._background.show();
+        this._stack.show();
+        this._backgroundGroup.show();
+        this._viewSelector.show();
 
-        this._workspacesDisplay.show();
-
-        if (!this._desktopFade.child)
-            this._desktopFade.child = this._getDesktopClone();
-
-        if (!this._workspacesDisplay.activeWorkspaceHasMaximizedWindows()) {
-            this._desktopFade.opacity = 255;
-            this._desktopFade.show();
-            Tweener.addTween(this._desktopFade,
-                             { opacity: 0,
-                               time: ANIMATION_TIME,
-                               transition: 'easeOutQuad'
-                             });
-        }
-
-        this._group.opacity = 0;
-        Tweener.addTween(this._group,
+        this._stack.opacity = 0;
+        Tweener.addTween(this._stack,
                          { opacity: 255,
                            transition: 'easeOutQuad',
                            time: ANIMATION_TIME,
                            onComplete: this._showDone,
                            onCompleteScope: this
                          });
-
-        Tweener.addTween(this._background,
-                         { dim_factor: 0.4,
-                           time: ANIMATION_TIME,
-                           transition: 'easeOutQuad'
-                         });
+        this._shadeBackgrounds();
 
         this._coverPane.raise_top();
         this._coverPane.show();
         this.emit('showing');
-    },
-
-    // showTemporarily:
-    //
-    // Animates the overview visible without grabbing mouse and keyboard input;
-    // if show() has already been called, this has no immediate effect, but
-    // will result in the overview not being hidden until hideTemporarily() is
-    // called.
-    showTemporarily: function() {
-        if (this.isDummy)
-            return;
-
-        if (this._shownTemporarily)
-            return;
-
-        this._syncInputMode();
-        this._animateVisible();
-        this._shownTemporarily = true;
     },
 
     // hide:
@@ -651,31 +578,19 @@ const Overview = new Lang.Class({
         if (!this._shown)
             return;
 
-        if (!this._shownTemporarily)
-            this._animateNotVisible();
+        let event = Clutter.get_current_event();
+        if (event) {
+            let type = event.type();
+            let button = (type == Clutter.EventType.BUTTON_PRESS ||
+                          type == Clutter.EventType.BUTTON_RELEASE);
+            let ctrl = (event.get_state() & Clutter.ModifierType.CONTROL_MASK) != 0;
+            if (button && ctrl)
+                return;
+        }
+
+        this._animateNotVisible();
 
         this._shown = false;
-        this._syncInputMode();
-
-        if (this._buttonPressId > 0)
-            this._group.disconnect(this._buttonPressId);
-        this._buttonPressId = 0;
-    },
-
-    // hideTemporarily:
-    //
-    // Reverses the effect of showTemporarily()
-    hideTemporarily: function() {
-        if (this.isDummy)
-            return;
-
-        if (!this._shownTemporarily)
-            return;
-
-        if (!this._shown)
-            this._animateNotVisible();
-
-        this._shownTemporarily = false;
         this._syncInputMode();
     },
 
@@ -683,10 +598,26 @@ const Overview = new Lang.Class({
         if (this.isDummy)
             return;
 
-        if (this._shown)
+        if (this.visible)
             this.hide();
         else
             this.show();
+    },
+
+    // Checks if the Activities button is currently sensitive to
+    // clicks. The first call to this function within the
+    // OVERVIEW_ACTIVATION_TIMEOUT time of the hot corner being
+    // triggered will return false. This avoids opening and closing
+    // the overview if the user both triggered the hot corner and
+    // clicked the Activities button.
+    shouldToggleByCornerOrButton: function() {
+        if (this.animationInProgress)
+            return false;
+        if (this._inDrag)
+            return false;
+        if (this._activationTime == 0 || Date.now() / 1000 - this._activationTime > OVERVIEW_ACTIVATION_TIMEOUT)
+            return true;
+        return false;
     },
 
     //// Private methods ////
@@ -696,29 +627,32 @@ const Overview = new Lang.Class({
         // overview we don't have a problem with the release of a press/release
         // going to an application.
         if (this.animationInProgress)
-            return;
+            return true;
 
         if (this._shown) {
-            if (!this._modal) {
-                if (Main.pushModal(this._group))
-                    this._modal = true;
-                else
-                    this.hide();
+            let shouldBeModal = !this._inXdndDrag;
+            if (shouldBeModal) {
+                if (!this._modal) {
+                    if (Main.pushModal(this._overview,
+                                       { keybindingMode: Shell.KeyBindingMode.OVERVIEW })) {
+                        this._modal = true;
+                    } else {
+                        this.hide();
+                        return false;
+                    }
+                }
+            } else {
+                global.stage_input_mode = Shell.StageInputMode.FULLSCREEN;
             }
-        } else if (this._shownTemporarily) {
-            if (this._modal) {
-                Main.popModal(this._group);
-                this._modal = false;
-            }
-            global.stage_input_mode = Shell.StageInputMode.FULLSCREEN;
         } else {
             if (this._modal) {
-                Main.popModal(this._group);
+                Main.popModal(this._overview);
                 this._modal = false;
             }
             else if (global.stage_input_mode == Shell.StageInputMode.FULLSCREEN)
                 global.stage_input_mode = Shell.StageInputMode.NORMAL;
         }
+        return true;
     },
 
     _animateNotVisible: function() {
@@ -726,33 +660,19 @@ const Overview = new Lang.Class({
             return;
 
         this.animationInProgress = true;
-        this._hideInProgress = true;
+        this.visibleTarget = false;
 
-        if (!this._workspacesDisplay.activeWorkspaceHasMaximizedWindows()) {
-            this._desktopFade.opacity = 0;
-            this._desktopFade.show();
-            Tweener.addTween(this._desktopFade,
-                             { opacity: 255,
-                               time: ANIMATION_TIME,
-                               transition: 'easeOutQuad' });
-        }
-
-        this._workspacesDisplay.zoomFromOverview();
+        this._viewSelector.zoomFromOverview();
 
         // Make other elements fade out.
-        Tweener.addTween(this._group,
+        Tweener.addTween(this._stack,
                          { opacity: 0,
                            transition: 'easeOutQuad',
                            time: ANIMATION_TIME,
                            onComplete: this._hideDone,
                            onCompleteScope: this
                          });
-
-        Tweener.addTween(this._background,
-                         { dim_factor: 1.0,
-                           time: ANIMATION_TIME,
-                           transition: 'easeOutQuad'
-                         });
+        this._unshadeBackgrounds();
 
         this._coverPane.raise_top();
         this._coverPane.show();
@@ -766,7 +686,7 @@ const Overview = new Lang.Class({
 
         this.emit('shown');
         // Handle any calls to hide* while we were showing
-        if (!this._shown && !this._shownTemporarily)
+        if (!this._shown)
             this._animateNotVisible();
 
         this._syncInputMode();
@@ -777,23 +697,19 @@ const Overview = new Lang.Class({
         // Re-enable unredirection
         Meta.enable_unredirect_for_screen(global.screen);
 
-        global.window_group.show();
-
-        this._workspacesDisplay.hide();
-
+        this._viewSelector.hide();
         this._desktopFade.hide();
-        this._background.hide();
-        this._group.hide();
+        this._backgroundGroup.hide();
+        this._stack.hide();
 
         this.visible = false;
         this.animationInProgress = false;
-        this._hideInProgress = false;
 
         this._coverPane.hide();
 
         this.emit('hidden');
         // Handle any calls to show* while we were hiding
-        if (this._shown || this._shownTemporarily)
+        if (this._shown)
             this._animateVisible();
 
         this._syncInputMode();

@@ -1,6 +1,7 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
 const Clutter = imports.gi.Clutter;
+const GdkPixbuf = imports.gi.GdkPixbuf;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 const Lang = imports.lang;
@@ -87,6 +88,141 @@ const rewriteRules = {
     ]
 };
 
+const STANDARD_TRAY_ICON_IMPLEMENTATIONS = {
+    'bluetooth-applet': 'bluetooth',
+    'gnome-volume-control-applet': 'volume', // renamed to gnome-sound-applet
+                                             // when moved to control center
+    'gnome-sound-applet': 'volume',
+    'nm-applet': 'network',
+    'gnome-power-manager': 'battery',
+    'keyboard': 'keyboard',
+    'a11y-keyboard': 'a11y',
+    'kbd-scrolllock': 'keyboard',
+    'kbd-numlock': 'keyboard',
+    'kbd-capslock': 'keyboard',
+    'ibus-ui-gtk': 'keyboard'
+};
+
+const NotificationGenericPolicy = new Lang.Class({
+    Name: 'NotificationGenericPolicy',
+    Extends: MessageTray.NotificationPolicy,
+
+    _init: function() {
+        // Don't chain to parent, it would try setting
+        // our properties to the defaults
+
+        this.id = 'generic';
+
+        this._masterSettings = new Gio.Settings({ schema: 'org.gnome.desktop.notifications' });
+        this._masterSettings.connect('changed', Lang.bind(this, this._changed));
+    },
+
+    store: function() { },
+
+    destroy: function() {
+        this._masterSettings.run_dispose();
+    },
+
+    _changed: function(settings, key) {
+        this.emit('policy-changed', key);
+    },
+
+    get enable() {
+        return true;
+    },
+
+    get enableSound() {
+        return true;
+    },
+
+    get showBanners() {
+        return this._masterSettings.get_boolean('show-banners');
+    },
+
+    get forceExpanded() {
+        return false;
+    },
+
+    get showInLockScreen() {
+        return this._masterSettings.get_boolean('show-in-lock-screen');
+    },
+
+    get detailsInLockScreen() {
+        return false;
+    }
+});
+
+const NotificationApplicationPolicy = new Lang.Class({
+    Name: 'NotificationApplicationPolicy',
+    Extends: MessageTray.NotificationPolicy,
+
+    _init: function(id) {
+        // Don't chain to parent, it would try setting
+        // our properties to the defaults
+
+        this.id = id;
+        this._canonicalId = this._canonicalizeId(id)
+
+        this._masterSettings = new Gio.Settings({ schema: 'org.gnome.desktop.notifications' });
+        this._settings = new Gio.Settings({ schema: 'org.gnome.desktop.notifications.application',
+                                            path: '/org/gnome/desktop/notifications/application/' + this._canonicalId + '/' });
+
+        this._masterSettings.connect('changed', Lang.bind(this, this._changed));
+        this._settings.connect('changed', Lang.bind(this, this._changed));
+    },
+
+    store: function() {
+        this._settings.set_string('application-id', this.id + '.desktop');
+
+        let apps = this._masterSettings.get_strv('application-children');
+        if (apps.indexOf(this._canonicalId) < 0) {
+            apps.push(this._canonicalId);
+            this._masterSettings.set_strv('application-children', apps);
+        }
+    },
+
+    destroy: function() {
+        this._masterSettings.run_dispose();
+        this._settings.run_dispose();
+    },
+
+    _changed: function(settings, key) {
+        this.emit('policy-changed', key);
+    },
+
+    _canonicalizeId: function(id) {
+        // Keys are restricted to lowercase alphanumeric characters and dash,
+        // and two dashes cannot be in succession
+        return id.toLowerCase().replace(/[^a-z0-9\-]/g, '-').replace(/--+/g, '-');
+    },
+
+    get enable() {
+        return this._settings.get_boolean('enable');
+    },
+
+    get enableSound() {
+        return this._settings.get_boolean('enable-sound-alerts');
+    },
+
+    get showBanners() {
+        return this._masterSettings.get_boolean('show-banners') &&
+            this._settings.get_boolean('show-banners');
+    },
+
+    get forceExpanded() {
+        return this._settings.get_boolean('force-expanded');
+    },
+
+    get showInLockScreen() {
+        return this._masterSettings.get_boolean('show-in-lock-screen') &&
+            this._settings.get_boolean('show-in-lock-screen');
+    },
+
+    get detailsInLockScreen() {
+        return this._settings.get_boolean('details-in-lock-screen');
+    }
+});
+
 const NotificationDaemon = new Lang.Class({
     Name: 'NotificationDaemon',
 
@@ -99,57 +235,54 @@ const NotificationDaemon = new Lang.Class({
         this._notifications = {};
         this._busProxy = new Bus();
 
-        Main.statusIconDispatcher.connect('message-icon-added', Lang.bind(this, this._onTrayIconAdded));
-        Main.statusIconDispatcher.connect('message-icon-removed', Lang.bind(this, this._onTrayIconRemoved));
+        this._trayManager = new Shell.TrayManager();
+        this._trayIconAddedId = this._trayManager.connect('tray-icon-added', Lang.bind(this, this._onTrayIconAdded));
+        this._trayIconRemovedId = this._trayManager.connect('tray-icon-removed', Lang.bind(this, this._onTrayIconRemoved));
 
         Shell.WindowTracker.get_default().connect('notify::focus-app',
             Lang.bind(this, this._onFocusAppChanged));
         Main.overview.connect('hidden',
             Lang.bind(this, this._onFocusAppChanged));
+
+        this._trayManager.manage_screen(global.screen, Main.messageTray.actor);
     },
 
-    _iconForNotificationData: function(icon, hints, size) {
-        let textureCache = St.TextureCache.get_default();
-
-        // If an icon is not specified, we use 'image-data' or 'image-path' hint for an icon
-        // and don't show a large image. There are currently many applications that use
-        // notify_notification_set_icon_from_pixbuf() from libnotify, which in turn sets
-        // the 'image-data' hint. These applications don't typically pass in 'app_icon'
-        // argument to Notify() and actually expect the pixbuf to be shown as an icon.
-        // So the logic here does the right thing for this case. If both an icon and either
-        // one of 'image-data' or 'image-path' are specified, we show both an icon and
-        // a large image.
-        if (icon) {
-            if (icon.substr(0, 7) == 'file://')
-                return textureCache.load_uri_async(icon, size, size);
-            else if (icon[0] == '/') {
-                let uri = GLib.filename_to_uri(icon, null);
-                return textureCache.load_uri_async(uri, size, size);
-            } else
-                return new St.Icon({ icon_name: icon,
-                                     icon_type: St.IconType.FULLCOLOR,
-                                     icon_size: size });
-        } else if (hints['image-data']) {
+    _imageForNotificationData: function(hints) {
+        if (hints['image-data']) {
             let [width, height, rowStride, hasAlpha,
                  bitsPerSample, nChannels, data] = hints['image-data'];
-            return textureCache.load_from_raw(data, hasAlpha, width, height, rowStride, size);
+            return Shell.util_create_pixbuf_from_data(data, GdkPixbuf.Colorspace.RGB, hasAlpha,
+                                                      bitsPerSample, width, height, rowStride);
         } else if (hints['image-path']) {
-            return textureCache.load_uri_async(GLib.filename_to_uri(hints['image-path'], null), size, size);
-        } else {
-            let stockIcon;
-            switch (hints.urgency) {
-                case Urgency.LOW:
-                case Urgency.NORMAL:
-                    stockIcon = 'gtk-dialog-info';
-                    break;
-                case Urgency.CRITICAL:
-                    stockIcon = 'gtk-dialog-error';
-                    break;
-            }
-            return new St.Icon({ icon_name: stockIcon,
-                                 icon_type: St.IconType.FULLCOLOR,
-                                 icon_size: size });
+            return new Gio.FileIcon({ file: Gio.File.new_for_path(hints['image-path']) });
         }
+        return null;
+    },
+
+    _fallbackIconForNotificationData: function(hints) {
+        let stockIcon;
+        switch (hints.urgency) {
+            case Urgency.LOW:
+            case Urgency.NORMAL:
+                stockIcon = 'gtk-dialog-info';
+                break;
+            case Urgency.CRITICAL:
+                stockIcon = 'gtk-dialog-error';
+                break;
+        }
+        return new Gio.ThemedIcon({ name: stockIcon });
+    },
+
+    _iconForNotificationData: function(icon) {
+        if (icon) {
+            if (icon.substr(0, 7) == 'file://')
+                return new Gio.FileIcon({ file: Gio.File.new_for_uri(icon) });
+            else if (icon[0] == '/')
+                return new Gio.FileIcon({ file: Gio.File.new_for_path(icon) });
+            else
+                return new Gio.ThemedIcon({ name: icon });
+        }
+        return null;
     },
 
     _lookupSource: function(title, pid, trayIcon) {
@@ -200,7 +333,7 @@ const NotificationDaemon = new Lang.Class({
             }
         }
 
-        let source = new Source(title, pid, sender, trayIcon);
+        let source = new Source(title, pid, sender, trayIcon, ndata ? ndata.hints['desktop-entry'] : null);
         source.setTransient(isForTransientNotification);
 
         if (!isForTransientNotification) {
@@ -243,6 +376,7 @@ const NotificationDaemon = new Lang.Class({
             Mainloop.idle_add(Lang.bind(this,
                                         function () {
                                             this._emitNotificationClosed(id, NotificationClosedReason.DISMISSED);
+                                            return false;
                                         }));
             return invocation.return_value(GLib.Variant.new('(u)', [id]));
         }
@@ -341,12 +475,8 @@ const NotificationDaemon = new Lang.Class({
             [ndata.id, ndata.icon, ndata.summary, ndata.body,
              ndata.actions, ndata.hints, ndata.notification];
 
-        let iconActor = this._iconForNotificationData(icon, hints, source.ICON_SIZE);
-
         if (notification == null) {
-            notification = new MessageTray.Notification(source, summary, body,
-                                                        { icon: iconActor,
-                                                          bannerMarkup: true });
+            notification = new MessageTray.Notification(source);
             ndata.notification = notification;
             notification.connect('destroy', Lang.bind(this,
                 function(n, reason) {
@@ -369,29 +499,38 @@ const NotificationDaemon = new Lang.Class({
                 function(n, actionId) {
                     this._emitActionInvoked(ndata.id, actionId);
                 }));
-        } else {
-            notification.update(summary, body, { icon: iconActor,
-                                                 bannerMarkup: true,
-                                                 clear: true });
         }
 
-        // We only display a large image if an icon is also specified.
-        if (icon && (hints['image-data'] || hints['image-path'])) {
-            let image = null;
-            if (hints['image-data']) {
-                let [width, height, rowStride, hasAlpha,
-                 bitsPerSample, nChannels, data] = hints['image-data'];
-                image = St.TextureCache.get_default().load_from_raw(data, hasAlpha,
-                                                                    width, height, rowStride, notification.IMAGE_SIZE);
-            } else if (hints['image-path']) {
-                image = St.TextureCache.get_default().load_uri_async(GLib.filename_to_uri(hints['image-path'], null),
-                                                                     notification.IMAGE_SIZE,
-                                                                     notification.IMAGE_SIZE);
-            }
-            notification.setImage(image);
-        } else {
-            notification.unsetImage();
-        }
+        // Mark music notifications so they can be shown in the screen shield
+        notification.isMusic = (ndata.hints['category'] == 'x-gnome.music');
+
+        let gicon = this._iconForNotificationData(icon, hints);
+        let gimage = this._imageForNotificationData(hints);
+
+        let image = null;
+
+        // If an icon is not specified, we use 'image-data' or 'image-path' hint for an icon
+        // and don't show a large image. There are currently many applications that use
+        // notify_notification_set_icon_from_pixbuf() from libnotify, which in turn sets
+        // the 'image-data' hint. These applications don't typically pass in 'app_icon'
+        // argument to Notify() and actually expect the pixbuf to be shown as an icon.
+        // So the logic here does the right thing for this case. If both an icon and either
+        // one of 'image-data' or 'image-path' are specified, we show both an icon and
+        // a large image.
+        if (gicon && gimage)
+            image = new St.Icon({ gicon: gimage,
+                                  icon_size: notification.IMAGE_SIZE });
+        else if (!gicon && gimage)
+            gicon = gimage;
+        else if (!gicon)
+            gicon = this._fallbackIconForNotificationData(hints);
+
+        notification.update(summary, body, { gicon: gicon,
+                                             bannerMarkup: true,
+                                             clear: true,
+                                             soundFile: hints['sound-file'],
+                                             soundName: hints['sound-name'] });
+        notification.setImage(image);
 
         if (actions.length) {
             notification.setUseActionIcons(hints['action-icons'] == true);
@@ -421,8 +560,8 @@ const NotificationDaemon = new Lang.Class({
         // of the 'transient' hint with hints['transient'] rather than hints.transient
         notification.setTransient(hints['transient'] == true);
 
-        let sourceIconActor = source.useNotificationIcon ? this._iconForNotificationData(icon, hints, source.ICON_SIZE) : null;
-        source.processNotification(notification, sourceIconActor);
+        let sourceGIcon = source.useNotificationIcon ? gicon : null;
+        source.processNotification(notification, sourceGIcon);
     },
 
     CloseNotification: function(id) {
@@ -445,7 +584,7 @@ const NotificationDaemon = new Lang.Class({
             // 'icon-multi',
             'icon-static',
             'persistence',
-            // 'sound',
+            'sound',
         ];
     },
 
@@ -483,7 +622,11 @@ const NotificationDaemon = new Lang.Class({
     },
 
     _onTrayIconAdded: function(o, icon) {
-        let source = this._getSource(icon.title || icon.wm_class || _("Unknown"), icon.pid, null, null, icon);
+        let wmClass = icon.wm_class ? icon.wm_class.toLowerCase() : '';
+        if (STANDARD_TRAY_ICON_IMPLEMENTATIONS[wmClass] !== undefined)
+            return;
+
+        let source = this._getSource(icon.title || icon.wm_class || C_("program", "Unknown"), icon.pid, null, null, icon);
     },
 
     _onTrayIconRemoved: function(o, icon) {
@@ -497,12 +640,22 @@ const Source = new Lang.Class({
     Name: 'NotificationDaemonSource',
     Extends: MessageTray.Source,
 
-    _init: function(title, pid, sender, trayIcon) {
+    _init: function(title, pid, sender, trayIcon, appId) {
+        // Need to set the app before chaining up, so
+        // methods called from the parent constructor can find it
+        this.trayIcon = trayIcon;
+        this.pid = pid;
+        this.app = this._getApp(appId);
+
         this.parent(title);
 
         this.initialTitle = title;
 
-        this.pid = pid;
+        if (this.app)
+            this.title = this.app.get_name();
+        else
+            this.useNotificationIcon = true;
+
         if (sender)
             this._nameWatcherId = Gio.DBus.session.watch_name(sender,
                                                               Gio.BusNameWatcherFlags.NONE,
@@ -511,16 +664,19 @@ const Source = new Lang.Class({
         else
             this._nameWatcherId = 0;
 
-        this._setApp();
-        if (this.app)
-            this.title = this.app.get_name();
-        else
-            this.useNotificationIcon = true;
-
-        this.trayIcon = trayIcon;
         if (this.trayIcon) {
-           this._setSummaryIcon(this.trayIcon);
-           this.useNotificationIcon = false;
+            // Try again finding the app, using the WM_CLASS from the tray icon
+            this._setSummaryIcon(this.trayIcon);
+            this.useNotificationIcon = false;
+        }
+    },
+
+    _createPolicy: function() {
+        if (this.app) {
+            let id = this.app.get_id().replace(/\.desktop$/,'');
+            return new NotificationApplicationPolicy(id);
+        } else {
+            return new NotificationGenericPolicy();
         }
     },
 
@@ -534,11 +690,11 @@ const Source = new Lang.Class({
             this.destroy();
     },
 
-    processNotification: function(notification, icon) {
-        if (!this.app)
-            this._setApp();
-        if (!this.app && icon)
-            this._setSummaryIcon(icon);
+    processNotification: function(notification, gicon) {
+        if (gicon)
+            this._gicon = gicon;
+        if (!this.trayIcon)
+            this.iconUpdated();
 
         let tracker = Shell.WindowTracker.get_default();
         if (notification.resident && this.app && tracker.focus_app == this.app)
@@ -547,42 +703,56 @@ const Source = new Lang.Class({
             this.notify(notification);
     },
 
-    handleSummaryClick: function() {
+    handleSummaryClick: function(button) {
         if (!this.trayIcon)
             return false;
 
         let event = Clutter.get_current_event();
-        if (event.type() != Clutter.EventType.BUTTON_RELEASE)
-            return false;
 
         // Left clicks are passed through only where there aren't unacknowledged
         // notifications, so it possible to open them in summary mode; right
         // clicks are always forwarded, as the right click menu is not useful for
         // tray icons
-        if (event.get_button() == 1 &&
+        if (button == 1 &&
             this.notifications.length > 0)
             return false;
 
-        if (Main.overview.visible) {
-            // We can't just connect to Main.overview's 'hidden' signal,
-            // because it's emitted *before* it calls popModal()...
-            let id = global.connect('notify::stage-input-mode', Lang.bind(this,
-                function () {
-                    global.disconnect(id);
-                    this.trayIcon.click(event);
-                }));
-            Main.overview.hide();
-        } else {
+        let id = global.connect('notify::stage-input-mode', Lang.bind(this, function () {
+            global.disconnect(id);
             this.trayIcon.click(event);
-        }
+        }));
+
+        Main.overview.hide();
         return true;
     },
 
-    _setApp: function() {
+    _getApp: function(appId) {
+        let app;
+
+        app = Shell.WindowTracker.get_default().get_app_from_pid(this.pid);
+        if (app != null)
+            return app;
+
+        if (this.trayIcon) {
+            app = Shell.AppSystem.get_default().lookup_wmclass(this.trayIcon.wm_class);
+            if (app != null)
+                return app;
+        }
+
+        if (appId) {
+            app = Shell.AppSystem.get_default().lookup_app(appId + '.desktop');
+            if (app != null)
+                return app;
+        }
+
+        return null;
+    },
+
+    _setApp: function(appId) {
         if (this.app)
             return;
 
-        this.app = Shell.WindowTracker.get_default().get_app_from_pid(this.pid);
+        this.app = this._getApp(appId);
         if (!this.app)
             return;
 
@@ -590,8 +760,18 @@ const Source = new Lang.Class({
         // notification-based icons (ie, not a trayicon) or if it was unset before
         if (!this.trayIcon) {
             this.useNotificationIcon = false;
-            this._setSummaryIcon(this.app.create_icon_texture (this.ICON_SIZE));
+            this.iconUpdated();
         }
+    },
+
+    setTitle: function(title) {
+        // Do nothing if .app is set, we don't want to override the
+        // app name with whatever is provided through libnotify (usually
+        // garbage)
+        if (this.app)
+            return;
+
+        this.parent(title);
     },
 
     open: function(notification) {
@@ -622,5 +802,20 @@ const Source = new Lang.Class({
         }
 
         this.parent();
+    },
+
+    createIcon: function(size) {
+        if (this.trayIcon) {
+            return new Clutter.Clone({ width: size,
+                                       height: size,
+                                       source: this.trayIcon });
+        } else if (this.app) {
+            return this.app.create_icon_texture(size);
+        } else if (this._gicon) {
+            return new St.Icon({ gicon: this._gicon,
+                                 icon_size: size });
+        } else {
+            return null;
+        }
     }
 });

@@ -1,19 +1,15 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
 const Clutter = imports.gi.Clutter;
-const Gdk = imports.gi.Gdk;
 const GLib = imports.gi.GLib;
-const Gio = imports.gi.Gio;
-const GnomeBluetooth = imports.gi.GnomeBluetooth;
 const GnomeBluetoothApplet = imports.gi.GnomeBluetoothApplet;
-const Gtk = imports.gi.Gtk;
+const GnomeBluetooth = imports.gi.GnomeBluetooth;
 const Lang = imports.lang;
-const Mainloop = imports.mainloop;
 const St = imports.gi.St;
-const Shell = imports.gi.Shell;
 
 const Main = imports.ui.main;
 const MessageTray = imports.ui.messageTray;
+const NotificationDaemon = imports.ui.notificationDaemon;
 const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
 
@@ -29,7 +25,7 @@ const Indicator = new Lang.Class({
     Extends: PanelMenu.SystemStatusButton,
 
     _init: function() {
-        this.parent('bluetooth-disabled', _("Bluetooth"));
+        this.parent('bluetooth-disabled-symbolic', _("Bluetooth"));
 
         this._applet = new GnomeBluetoothApplet.Applet();
 
@@ -60,8 +56,8 @@ const Indicator = new Lang.Class({
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this._fullMenuItems = [new PopupMenu.PopupSeparatorMenuItem(),
-                               new PopupMenu.PopupMenuItem(_("Send Files to Device...")),
-                               new PopupMenu.PopupMenuItem(_("Set up a New Device...")),
+                               new PopupMenu.PopupMenuItem(_("Send Files to Device…")),
+                               new PopupMenu.PopupMenuItem(_("Set Up a New Device…")),
                                new PopupMenu.PopupSeparatorMenuItem()];
         this._hasDevices = false;
 
@@ -85,7 +81,7 @@ const Indicator = new Lang.Class({
         this._applet.connect('notify::show-full-menu', Lang.bind(this, this._updateFullMenu));
         this._updateFullMenu();
 
-        this.menu.addSettingsAction(_("Bluetooth Settings"), 'bluetooth-properties.desktop');
+        this.menu.addSettingsAction(_("Bluetooth Settings"), 'gnome-bluetooth-panel.desktop');
 
         this._applet.connect('pincode-request', Lang.bind(this, this._pinRequest));
         this._applet.connect('confirm-request', Lang.bind(this, this._confirmRequest));
@@ -107,17 +103,14 @@ const Indicator = new Lang.Class({
             /* TRANSLATORS: this means that bluetooth was disabled by hardware rfkill */
             this._killswitch.setStatus(_("hardware disabled"));
 
-        if (has_adapter)
-            this.actor.show();
-        else
-            this.actor.hide();
+        this.actor.visible = has_adapter;
 
         if (on) {
             this._discoverable.actor.show();
-            this.setIcon('bluetooth-active');
+            this.setIcon('bluetooth-active-symbolic');
         } else {
             this._discoverable.actor.hide();
-            this.setIcon('bluetooth-disabled');
+            this.setIcon('bluetooth-disabled-symbolic');
         }
     },
 
@@ -243,24 +236,8 @@ const Indicator = new Lang.Class({
         }
 
         if (device.capabilities & GnomeBluetoothApplet.Capabilities.OBEX_PUSH) {
-            item.menu.addAction(_("Send Files..."), Lang.bind(this, function() {
+            item.menu.addAction(_("Send Files…"), Lang.bind(this, function() {
                 this._applet.send_to_address(device.bdaddr, device.alias);
-            }));
-        }
-        if (device.capabilities & GnomeBluetoothApplet.Capabilities.OBEX_FILE_TRANSFER) {
-            item.menu.addAction(_("Browse Files..."), Lang.bind(this, function(event) {
-                this._applet.browse_address(device.bdaddr, event.get_time(),
-                    Lang.bind(this, function(applet, result) {
-                        try {
-                            applet.browse_address_finish(result);
-                        } catch (e) {
-                            this._ensureSource();
-                            this._source.notify(new MessageTray.Notification(this._source,
-                                 _("Bluetooth"),
-                                 _("Error browsing device"),
-                                 { body: _("The requested device cannot be browsed, error is '%s'").format(e) }));
-                        }
-                    }));
             }));
         }
 
@@ -309,7 +286,8 @@ const Indicator = new Lang.Class({
 
     _ensureSource: function() {
         if (!this._source) {
-            this._source = new Source();
+            this._source = new MessageTray.Source(_("Bluetooth"), 'bluetooth-active');
+            this._source.policy = new NotificationDaemon.NotificationApplicationPolicy('gnome-bluetooth-panel');
             Main.messageTray.add(this._source);
         }
     },
@@ -331,35 +309,6 @@ const Indicator = new Lang.Class({
 
     _cancelRequest: function() {
         this._source.destroy();
-    }
-});
-
-const Source = new Lang.Class({
-    Name: 'BluetoothSource',
-    Extends: MessageTray.Source,
-
-    _init: function() {
-        this.parent(_("Bluetooth"));
-
-        this._setSummaryIcon(this.createNotificationIcon());
-    },
-
-    notify: function(notification) {
-        this._private_destroyId = notification.connect('destroy', Lang.bind(this, function(notification) {
-            if (this.notification == notification) {
-                // the destroyed notification is the last for this source
-                this.notification.disconnect(this._private_destroyId);
-                this.destroy();
-            }
-        }));
-
-        this.parent(notification);
-    },
-
-    createNotificationIcon: function() {
-        return new St.Icon({ icon_name: 'bluetooth-active',
-                             icon_type: St.IconType.SYMBOLIC,
-                             icon_size: this.ICON_SIZE });
     }
 });
 
@@ -406,6 +355,7 @@ const ConfirmNotification = new Lang.Class({
     _init: function(source, applet, device_path, name, long_name, pin) {
         this.parent(source,
                     _("Bluetooth"),
+                    /* Translators: argument is the device short name */
                     _("Pairing confirmation for %s").format(name),
                     { customContent: true });
         this.setResident(true);
@@ -413,8 +363,9 @@ const ConfirmNotification = new Lang.Class({
         this._applet = applet;
         this._devicePath = device_path;
         this.addBody(_("Device %s wants to pair with this computer").format(long_name));
-        this.addBody(_("Please confirm whether the PIN '%s' matches the one on the device.").format(pin));
+        this.addBody(_("Please confirm whether the PIN '%06d' matches the one on the device.").format(pin));
 
+        /* Translators: this is the verb, not the noun */
         this.addButton('matches', _("Matches"));
         this.addButton('does-not-match', _("Does not match"));
 
@@ -449,7 +400,8 @@ const PinNotification = new Lang.Class({
         this._entry.connect('key-release-event', Lang.bind(this, function(entry, event) {
             let key = event.get_key_symbol();
             if (key == Clutter.KEY_Return) {
-                this.emit('action-invoked', 'ok');
+                if (this._canActivateOkButton())
+                    this.emit('action-invoked', 'ok');
                 return true;
             } else if (key == Clutter.KEY_Escape) {
                 this.emit('action-invoked', 'cancel');
@@ -461,6 +413,12 @@ const PinNotification = new Lang.Class({
 
         this.addButton('ok', _("OK"));
         this.addButton('cancel', _("Cancel"));
+
+        this.setButtonSensitive('ok', this._canActivateOkButton());
+        this._entry.clutter_text.connect('text-changed', Lang.bind(this,
+            function() {
+                this.setButtonSensitive('ok', this._canActivateOkButton());
+            }));
 
         this.connect('action-invoked', Lang.bind(this, function(self, action) {
             if (action == 'ok') {
@@ -484,8 +442,11 @@ const PinNotification = new Lang.Class({
         }));
     },
 
-    grabFocus: function(lockTray) {
-        this.parent(lockTray);
-        global.stage.set_key_focus(this._entry);
+    _canActivateOkButton: function() {
+        // PINs have a fixed length of 6
+        if (this._numeric)
+            return this._entry.clutter_text.text.length == 6;
+        else
+            return true;
     }
 });

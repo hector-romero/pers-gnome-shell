@@ -6,15 +6,14 @@ const GObject = imports.gi.GObject;
 const Gio = imports.gi.Gio;
 const Gtk = imports.gi.Gtk;
 const Pango = imports.gi.Pango;
+const Format = imports.format;
 
 const _ = Gettext.gettext;
 
 const Config = imports.misc.config;
-const Format = imports.misc.format;
 const ExtensionUtils = imports.misc.extensionUtils;
 
-
-const GnomeShellIface = <interface name="org.gnome.Shell">
+const GnomeShellIface = <interface name="org.gnome.Shell.Extensions">
 <signal name="ExtensionStatusChanged">
     <arg type="s" name="uuid"/>
     <arg type="i" name="state"/>
@@ -46,6 +45,7 @@ const Application = new Lang.Class({
         this._extensionPrefsModules = {};
 
         this._extensionIters = {};
+        this._startupUuid = null;
     },
 
     _buildModel: function() {
@@ -162,7 +162,7 @@ const Application = new Lang.Class({
         vbox.add(toolbar);
         let toolitem;
 
-        let label = new Gtk.Label({ label: _("<b>Extension</b>"),
+        let label = new Gtk.Label({ label: '<b>' + _("Extension") + '</b>',
                                     use_markup: true });
         toolitem = new Gtk.ToolItem({ child: label });
         toolbar.add(toolitem);
@@ -175,7 +175,7 @@ const Application = new Lang.Class({
         let renderer = new Gtk.CellRendererText();
         this._extensionSelector.pack_start(renderer, true);
         this._extensionSelector.add_attribute(renderer, 'text', 1);
-        this._extensionSelector.set_cell_data_func(renderer, Lang.bind(this, this._setExtensionInsensitive), null);
+        this._extensionSelector.set_cell_data_func(renderer, Lang.bind(this, this._setExtensionInsensitive));
         this._extensionSelector.connect('changed', Lang.bind(this, this._extensionSelected));
 
         toolitem = new Gtk.ToolItem({ child: this._extensionSelector });
@@ -202,22 +202,22 @@ const Application = new Lang.Class({
     },
 
     _scanExtensions: function() {
-        ExtensionUtils.scanExtensions(Lang.bind(this, function(uuid, dir, type) {
-            if (ExtensionUtils.extensions[uuid] !== undefined)
-                return;
+        let finder = new ExtensionUtils.ExtensionFinder();
+        finder.connect('extension-found', Lang.bind(this, this._extensionFound));
+        finder.connect('extensions-loaded', Lang.bind(this, this._extensionsLoaded));
+        finder.scanExtensions();
+    },
 
-            let extension;
-            try {
-                extension = ExtensionUtils.createExtensionObject(uuid, dir, type);
-            } catch(e) {
-                global.logError('' + e);
-                return;
-            }
+    _extensionFound: function(signals, extension) {
+        let iter = this._model.append();
+        this._model.set(iter, [0, 1], [extension.uuid, extension.metadata.name]);
+        this._extensionIters[extension.uuid] = iter;
+    },
 
-            let iter = this._model.append();
-            this._model.set(iter, [0, 1], [uuid, extension.metadata.name]);
-            this._extensionIters[uuid] = iter;
-        }));
+    _extensionsLoaded: function() {
+        if (this._startupUuid && this._extensionAvailable(this._startupUuid))
+            this._selectExtension(this._startupUuid);
+        this._startupUuid = null;
     },
 
     _onActivate: function() {
@@ -239,10 +239,10 @@ const Application = new Lang.Class({
             // Strip off "extension:///" prefix which fakes a URI, if it exists
             uuid = stripPrefix(uuid, "extension:///");
 
-            if (!this._extensionAvailable(uuid))
-                return 1;
-
-            this._selectExtension(uuid);
+            if (this._extensionAvailable(uuid))
+                this._selectExtension(uuid);
+            else
+                this._startupUuid = uuid;
         }
         return 0;
     }
@@ -257,7 +257,7 @@ function initEnvironment() {
         },
 
         logError: function(s) {
-            global.log('ERROR: ' + s);
+            log('ERROR: ' + s);
         },
 
         userdatadir: GLib.build_filenamev([GLib.get_user_data_dir(), 'gnome-shell'])
@@ -268,7 +268,6 @@ function initEnvironment() {
 
 function main(argv) {
     initEnvironment();
-    ExtensionUtils.init();
 
     Gettext.bindtextdomain(Config.GETTEXT_PACKAGE, Config.LOCALEDIR);
     Gettext.textdomain(Config.GETTEXT_PACKAGE);

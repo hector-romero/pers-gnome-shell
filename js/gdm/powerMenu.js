@@ -20,40 +20,28 @@
 
 const Gio = imports.gi.Gio;
 const Lang = imports.lang;
-const UPowerGlib = imports.gi.UPowerGlib;
 
-const ConsoleKit = imports.gdm.consoleKit;
-const Systemd = imports.gdm.systemd;
+const LoginManager = imports.misc.loginManager;
 
+const GdmUtil = imports.gdm.util;
 const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
-
-const _LOGIN_SCREEN_SCHEMA = 'org.gnome.login-screen';
 
 const PowerMenuButton = new Lang.Class({
     Name: 'PowerMenuButton',
     Extends: PanelMenu.SystemStatusButton,
 
     _init: function() {
-        this.parent('system-shutdown', null);
-        this._upClient = new UPowerGlib.Client();
+        /* Translators: accessible name of the power menu in the login screen */
+        this.parent('system-shutdown-symbolic', _("Power"));
 
-        if (Systemd.haveSystemd())
-            this._systemdLoginManager = new Systemd.SystemdLoginManager();
-        else
-            this._consoleKitManager = new ConsoleKit.ConsoleKitManager();
+        this._loginManager = LoginManager.getLoginManager();
 
-        if (Gio.Settings.list_schemas().indexOf(_LOGIN_SCREEN_SCHEMA) != -1) {
-            this._settings = new Gio.Settings({ schema: _LOGIN_SCREEN_SCHEMA });
-            this._settings.connect('changed::disable-restart-buttons',
-                                   Lang.bind(this, this._updateVisibility));
-        }
+        this._settings = new Gio.Settings({ schema: GdmUtil.LOGIN_SCREEN_SCHEMA });
+        this._settings.connect('changed::disable-restart-buttons',
+                               Lang.bind(this, this._updateVisibility));
 
         this._createSubMenu();
-
-        this._upClient.connect('notify::can-suspend',
-                               Lang.bind(this, this._updateHaveSuspend));
-        this._updateHaveSuspend();
 
         // ConsoleKit doesn't send notifications when shutdown/reboot
         // are disabled, so we update the menu item each time the menu opens
@@ -62,108 +50,41 @@ const PowerMenuButton = new Lang.Class({
                 if (open) {
                     this._updateHaveShutdown();
                     this._updateHaveRestart();
+                    this._updateHaveSuspend();
                 }
             }));
         this._updateHaveShutdown();
         this._updateHaveRestart();
-    },
-
-    _hasDisableRestartButtons: function() {
-        if (this._settings)
-            return this._settings.get_boolean('disable-restart-buttons');
-        else
-            return false;
+        this._updateHaveSuspend();
     },
 
     _updateVisibility: function() {
-        if ((!this._haveSuspend && !this._haveShutdown && !this._haveRestart)
-            || this._hasDisableRestartButtons())
-            this.actor.hide();
-        else
-            this.actor.show();
+        let shouldBeVisible = (this._haveSuspend || this._haveShutdown || this._haveRestart);
+        this.actor.visible = shouldBeVisible && !this._settings.get_boolean('disable-restart-buttons');
     },
 
     _updateHaveShutdown: function() {
-
-        if (Systemd.haveSystemd()) {
-            this._systemdLoginManager.CanPowerOffRemote(Lang.bind(this,
-                function(result, error) {
-                    if (!error)
-                        this._haveShutdown = result != 'no';
-                    else
-                        this._haveShutdown = false;
-
-                    if (this._haveShutdown)
-                        this._powerOffItem.actor.show();
-                    else
-                        this._powerOffItem.actor.hide();
-
-                    this._updateVisibility();
-                }));
-        } else {
-            this._consoleKitManager.CanStopRemote(Lang.bind(this,
-                function(result, error) {
-                    if (!error)
-                        this._haveShutdown = result;
-                    else
-                        this._haveShutdown = false;
-
-                    if (this._haveShutdown) {
-                        this._powerOffItem.actor.show();
-                    } else {
-                        this._powerOffItem.actor.hide();
-                    }
-
-                    this._updateVisibility();
-                }));
-        }
+        this._loginManager.canPowerOff(Lang.bind(this, function(result) {
+            this._haveShutdown = result;
+            this._powerOffItem.actor.visible = this._haveShutdown;
+            this._updateVisibility();
+        }));
     },
 
     _updateHaveRestart: function() {
-
-        if (Systemd.haveSystemd()) {
-            this._systemdLoginManager.CanRebootRemote(Lang.bind(this,
-                function(result, error) {
-                    if (!error)
-                        this._haveRestart = result != 'no';
-                    else
-                        this._haveRestart = false;
-
-                    if (this._haveRestart)
-                        this._restartItem.actor.show();
-                    else
-                        this._restartItem.actor.hide();
-
-                    this._updateVisibility();
-                }));
-        } else {
-            this._consoleKitManager.CanRestartRemote(Lang.bind(this,
-                function(result, error) {
-                    if (!error)
-                        this._haveRestart = result;
-                    else
-                        this._haveRestart = false;
-
-                    if (this._haveRestart) {
-                        this._restartItem.actor.show();
-                    } else {
-                        this._restartItem.actor.hide();
-                    }
-
-                    this._updateVisibility();
-                }));
-        }
+        this._loginManager.canReboot(Lang.bind(this, function(result) {
+            this._haveRestart = result;
+            this._restartItem.actor.visible = this._haveRestart;
+            this._updateVisibility();
+        }));
     },
 
     _updateHaveSuspend: function() {
-        this._haveSuspend = this._upClient.get_can_suspend();
-
-        if (this._haveSuspend)
-            this._suspendItem.actor.show();
-        else
-            this._suspendItem.actor.hide();
-
-        this._updateVisibility();
+        this._loginManager.canSuspend(Lang.bind(this, function(result) {
+            this._haveSuspend = result;
+            this._suspendItem.actor.visible = this._haveSuspend;
+            this._updateVisibility();
+        }));
     },
 
     _createSubMenu: function() {
@@ -186,27 +107,23 @@ const PowerMenuButton = new Lang.Class({
     },
 
     _onActivateSuspend: function() {
-        if (this._haveSuspend)
-            this._upClient.suspend_sync(null);
+        if (!this._haveSuspend)
+            return;
+
+        this._loginManager.suspend();
     },
 
     _onActivateRestart: function() {
         if (!this._haveRestart)
             return;
 
-        if (Systemd.haveSystemd())
-            this._systemdLoginManager.RebootRemote(true);
-        else
-            this._consoleKitManager.RestartRemote();
+        this._loginManager.reboot();
     },
 
     _onActivatePowerOff: function() {
         if (!this._haveShutdown)
             return;
 
-        if (Systemd.haveSystemd())
-            this._systemdLoginManager.PowerOffRemote(true);
-        else
-            this._consoleKitManager.StopRemote();
+        this._loginManager.powerOff();
     }
 });

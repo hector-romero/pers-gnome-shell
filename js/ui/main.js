@@ -10,163 +10,126 @@ const Meta = imports.gi.Meta;
 const Shell = imports.gi.Shell;
 const St = imports.gi.St;
 
-const AutomountManager = imports.ui.automountManager;
-const AutorunManager = imports.ui.autorunManager;
-const Config = imports.misc.config;
+const Components = imports.ui.components;
 const CtrlAltTab = imports.ui.ctrlAltTab;
 const EndSessionDialog = imports.ui.endSessionDialog;
-const PolkitAuthenticationAgent = imports.ui.polkitAuthenticationAgent;
-const KeyringPrompt = imports.ui.keyringPrompt;
 const Environment = imports.ui.environment;
 const ExtensionSystem = imports.ui.extensionSystem;
+const ExtensionDownloader = imports.ui.extensionDownloader;
 const Keyboard = imports.ui.keyboard;
 const MessageTray = imports.ui.messageTray;
+const OsdWindow = imports.ui.osdWindow;
 const Overview = imports.ui.overview;
 const Panel = imports.ui.panel;
-const PlaceDisplay = imports.ui.placeDisplay;
+const Params = imports.misc.params;
 const RunDialog = imports.ui.runDialog;
 const Layout = imports.ui.layout;
+const LoginManager = imports.misc.loginManager;
 const LookingGlass = imports.ui.lookingGlass;
-const NetworkAgent = Config.HAVE_NETWORKMANAGER ? imports.ui.networkAgent : null;
 const NotificationDaemon = imports.ui.notificationDaemon;
 const WindowAttentionHandler = imports.ui.windowAttentionHandler;
+const ScreenShield = imports.ui.screenShield;
 const Scripting = imports.ui.scripting;
+const SessionMode = imports.ui.sessionMode;
 const ShellDBus = imports.ui.shellDBus;
-//const TelepathyClient = imports.ui.telepathyClient;
+const ShellMountOperation = imports.ui.shellMountOperation;
 const WindowManager = imports.ui.windowManager;
 //const Magnifier = imports.ui.magnifier;
 const XdndHandler = imports.ui.xdndHandler;
-const StatusIconDispatcher = imports.ui.statusIconDispatcher;
 const Util = imports.misc.util;
 
-const OVERRIDES_SCHEMA = 'org.gnome.shell.overrides';
-const DEFAULT_BACKGROUND_COLOR = new Clutter.Color();
-DEFAULT_BACKGROUND_COLOR.from_pixel(0x2266bbff);
+const DEFAULT_BACKGROUND_COLOR = Clutter.Color.from_pixel(0x2e3436ff);
 
-let automountManager = null;
-let autorunManager = null;
+let componentManager = null;
 let panel = null;
-let hotCorners = [];
-let placesManager = null;
 let overview = null;
 let runDialog = null;
 let lookingGlass = null;
 let wm = null;
 let messageTray = null;
+let screenShield = null;
 let notificationDaemon = null;
 let windowAttentionHandler = null;
-//let telepathyClient = null;
 let ctrlAltTabManager = null;
-let recorder = null;
+let osdWindow = null;
+let sessionMode = null;
 let shellDBusService = null;
+let shellMountOpDBusService = null;
+let screenSaverDBus = null;
 let modalCount = 0;
+let keybindingMode = Shell.KeyBindingMode.NONE;
 let modalActorFocusStack = [];
 let uiGroup = null;
 //let magnifier = null;
 let xdndHandler = null;
-let statusIconDispatcher = null;
 let keyboard = null;
 let layoutManager = null;
-let networkAgent = null;
-let _errorLogStack = [];
 let _startDate;
 let _defaultCssStylesheet = null;
 let _cssStylesheet = null;
-let _gdmCssStylesheet = null;
-let _overridesSettings = null;
+let _workspacesSettings = null;
 
-let background = null;
+function _sessionUpdated() {
+    _loadDefaultStylesheet();
 
-function _createUserSession() {
-    // Load the calendar server. Note that we are careful about
-    // not loading any events until the user presses the clock
-    global.launch_calendar_server();
+    wm.setCustomKeybindingHandler('panel-main-menu',
+                                  Shell.KeyBindingMode.NORMAL |
+                                  Shell.KeyBindingMode.OVERVIEW,
+                                  sessionMode.hasOverview ? Lang.bind(overview, overview.toggle) : null);
+    wm.allowKeybinding('overlay-key', Shell.KeyBindingMode.NORMAL |
+                                      Shell.KeyBindingMode.OVERVIEW);
 
-    placesManager = new PlaceDisplay.PlacesManager();
-//    telepathyClient = new TelepathyClient.Client();
-    automountManager = new AutomountManager.AutomountManager();
-    autorunManager = new AutorunManager.AutorunManager();
-    if (Config.HAVE_NETWORKMANAGER) {
-        networkAgent = new NetworkAgent.NetworkAgent();
-    }
+    wm.setCustomKeybindingHandler('panel-run-dialog',
+                                  Shell.KeyBindingMode.NORMAL |
+                                  Shell.KeyBindingMode.OVERVIEW,
+                                  sessionMode.hasRunDialog ? openRunDialog : null);
 
-}
-
-function _createGDMSession() {
-    // We do this this here instead of at the top to prevent GDM
-    // related code from getting loaded in normal user sessions
-    const LoginDialog = imports.gdm.loginDialog;
-
-    let loginDialog = new LoginDialog.LoginDialog();
-    loginDialog.connect('loaded', function() {
-                            loginDialog.open();
-                        });
-}
-
-function _initRecorder() {
-    let recorderSettings = new Gio.Settings({ schema: 'org.gnome.shell.recorder' });
-
-    global.screen.connect('toggle-recording', function() {
-        if (recorder == null) {
-            recorder = new Shell.Recorder({ stage: global.stage });
-        }
-
-        if (recorder.is_recording()) {
-            recorder.close();
-            Meta.enable_unredirect_for_screen(global.screen);
-        } else {
-            // read the parameters from GSettings always in case they have changed
-            recorder.set_framerate(recorderSettings.get_int('framerate'));
-            /* Translators: this is a filename used for screencast recording */
-            // xgettext:no-c-format
-            recorder.set_filename(_("Screencast from %d %t") + '.' + recorderSettings.get_string('file-extension'));
-            let pipeline = recorderSettings.get_string('pipeline');
-
-            if (!pipeline.match(/^\s*$/))
-                recorder.set_pipeline(pipeline);
-            else
-                recorder.set_pipeline(null);
-
-            Meta.disable_unredirect_for_screen(global.screen);
-            recorder.record();
-        }
-    });
-}
-
-function _initUserSession() {
-    _initRecorder();
-
-    global.screen.override_workspace_layout(Meta.ScreenCorner.TOPLEFT, false, -1, 1);
-
-    ExtensionSystem.init();
-    ExtensionSystem.loadExtensions();
-
-    Meta.keybindings_set_custom_handler('panel-run-dialog', function() {
-       getRunDialog().open();
-    });
-
-    Meta.keybindings_set_custom_handler('panel-main-menu', function () {
-        overview.toggle();
-    });
-
-    global.display.connect('overlay-key', Lang.bind(overview, overview.toggle));
-
+    if (!sessionMode.hasRunDialog && lookingGlass)
+        lookingGlass.close();
 }
 
 function start() {
-    // Monkey patch utility functions into the global proxy;
-    // This is easier and faster than indirecting down into global
-    // if we want to call back up into JS.
-    global.logError = _logError;
-    global.log = _logDebug;
+    // These are here so we don't break compatibility.
+    global.logError = window.log;
+    global.log = window.log;
 
     // Chain up async errors reported from C
     global.connect('notify-error', function (global, msg, detail) { notifyError(msg, detail); });
 
     Gio.DesktopAppInfo.set_desktop_env('GNOME');
 
-    shellDBusService = new ShellDBus.GnomeShell();
+    sessionMode = new SessionMode.SessionMode();
+    sessionMode.connect('sessions-loaded', _sessionsLoaded);
+    sessionMode.init();
+}
 
+function _sessionsLoaded() {
+    sessionMode.connect('updated', _sessionUpdated);
+    _initializePrefs();
+    _initializeUI();
+
+    shellDBusService = new ShellDBus.GnomeShell();
+    shellMountOpDBusService = new ShellMountOperation.GnomeShellMountOpHandler();
+
+    _sessionUpdated();
+}
+
+function _initializePrefs() {
+    let keys = new Gio.Settings({ schema: sessionMode.overridesSchema }).list_keys();
+    for (let i = 0; i < keys.length; i++)
+        Meta.prefs_override_preference_schema (keys[i], sessionMode.overridesSchema);
+
+    let workspacesSchema;
+    if (keys.indexOf('dynamic-workspaces') > -1)
+        workspacesSchema = sessionMode.overridesSchema;
+    else
+        workspacesSchema = 'org.gnome.mutter';
+
+     _workspacesSettings = new Gio.Settings({ schema: workspacesSchema });
+     _workspacesSettings.connect('changed::dynamic-workspaces', _queueCheckWorkspaces);
+}
+
+function _initializeUI() {
     // Ensure ShellWindowTracker and ShellAppUsage are initialized; this will
     // also initialize ShellAppSystem first.  ShellAppSystem
     // needs to load all the .desktop files, and ShellWindowTracker
@@ -180,82 +143,48 @@ function start() {
 
     tracker.connect('startup-sequence-changed', _queueCheckWorkspaces);
 
-    // The stage is always covered so Clutter doesn't need to clear it; however
-    // the color is used as the default contents for the Mutter root background
-    // actor so set it anyways.
-    global.stage.color = DEFAULT_BACKGROUND_COLOR;
-    global.stage.no_clear_hint = true;
+    _loadDefaultStylesheet();
 
-    _defaultCssStylesheet = global.datadir + '/theme/gnome-shell.css';
-    _gdmCssStylesheet = global.datadir + '/theme/gdm.css';
-    loadTheme();
-
-    // Set up stage hierarchy to group all UI actors under one container.
-    uiGroup = new Shell.GenericContainer({ name: 'uiGroup' });
-    uiGroup.connect('allocate',
-                    function (actor, box, flags) {
-                        let children = uiGroup.get_children();
-                        for (let i = 0; i < children.length; i++)
-                            children[i].allocate_preferred_size(flags);
-                    });
-    uiGroup.connect('get-preferred-width',
-                    function(actor, forHeight, alloc) {
-                        let width = global.stage.width;
-                        [alloc.min_size, alloc.natural_size] = [width, width];
-                    });
-    uiGroup.connect('get-preferred-height',
-                    function(actor, forWidth, alloc) {
-                        let height = global.stage.height;
-                        [alloc.min_size, alloc.natural_size] = [height, height];
-                    });
-    global.window_group.reparent(uiGroup);
-    global.overlay_group.reparent(uiGroup);
-    global.stage.add_actor(uiGroup);
-
+    // Setup the stage hierarchy early
     layoutManager = new Layout.LayoutManager();
+
+    // Various parts of the codebase still refers to Main.uiGroup
+    // instead using the layoutManager.  This keeps that code
+    // working until it's updated.
+    uiGroup = layoutManager.uiGroup;
+
     xdndHandler = new XdndHandler.XdndHandler();
     ctrlAltTabManager = new CtrlAltTab.CtrlAltTabManager();
-    // This overview object is just a stub for non-user sessions
-    overview = new Overview.Overview({ isDummy: global.session_type != Shell.SessionType.USER });
-//    magnifier = new Magnifier.Magnifier();
-    statusIconDispatcher = new StatusIconDispatcher.StatusIconDispatcher();
-    panel = new Panel.Panel();
+    osdWindow = new OsdWindow.OsdWindow();
+    overview = new Overview.Overview();
     wm = new WindowManager.WindowManager();
+//    magnifier = new Magnifier.Magnifier();
+    if (LoginManager.canLock())
+        screenShield = new ScreenShield.ScreenShield();
+
+    panel = new Panel.Panel();
     messageTray = new MessageTray.MessageTray();
     keyboard = new Keyboard.Keyboard();
     notificationDaemon = new NotificationDaemon.NotificationDaemon();
     windowAttentionHandler = new WindowAttentionHandler.WindowAttentionHandler();
-
-    if (global.session_type == Shell.SessionType.USER)
-        _createUserSession();
-    else if (global.session_type == Shell.SessionType.GDM)
-        _createGDMSession();
-
-    panel.startStatusArea();
+    componentManager = new Components.ComponentManager();
 
     layoutManager.init();
-    keyboard.init();
     overview.init();
 
-    if (global.session_type == Shell.SessionType.USER)
-        _initUserSession();
-    statusIconDispatcher.start(messageTray.actor);
+    global.screen.override_workspace_layout(Meta.ScreenCorner.TOPLEFT,
+                                            false, -1, 1);
+    global.display.connect('overlay-key', Lang.bind(overview, overview.toggle));
 
     // Provide the bus object for gnome-session to
     // initiate logouts.
     EndSessionDialog.init();
 
-    // Attempt to become a PolicyKit authentication agent
-    PolkitAuthenticationAgent.init()
-
-    // Become a prompter for gnome keyring
-    KeyringPrompt.init();
+    // We're ready for the session manager to move to the next phase
+    Meta.register_with_session();
 
     _startDate = new Date();
 
-    global.stage.connect('captured-event', _globalKeyPressHandler);
-
-    _log('info', 'loaded at ' + _startDate);
     log('GNOME Shell started at ' + _startDate);
 
     let perfModuleName = GLib.getenv("SHELL_PERF_MODULE");
@@ -265,9 +194,6 @@ function start() {
         Scripting.runPerfScript(module, perfOutput);
     }
 
-    _overridesSettings = new Gio.Settings({ schema: OVERRIDES_SCHEMA });
-    _overridesSettings.connect('changed::dynamic-workspaces', _queueCheckWorkspaces);
-
     global.screen.connect('notify::n-workspaces', _nWorkspacesChanged);
 
     global.screen.connect('window-entered-monitor', _windowEnteredMonitor);
@@ -275,6 +201,24 @@ function start() {
     global.screen.connect('restacked', _windowsRestacked);
 
     _nWorkspacesChanged();
+
+    ExtensionDownloader.init();
+    ExtensionSystem.init();
+
+    if (sessionMode.isGreeter && screenShield) {
+        layoutManager.connect('startup-prepared', function() {
+            screenShield.showDialog();
+        });
+    }
+
+    layoutManager.connect('startup-complete', function() {
+                              if (keybindingMode == Shell.KeyBindingMode.NONE) {
+                                  keybindingMode = Shell.KeyBindingMode.NORMAL;
+                              }
+                              if (screenShield) {
+                                  screenShield.lockIfWasLocked();
+                              }
+                          });
 }
 
 let _workspaces = [];
@@ -458,6 +402,18 @@ function _nWorkspacesChanged() {
     return false;
 }
 
+function _loadDefaultStylesheet() {
+    if (!sessionMode.isPrimary)
+        return;
+
+    let stylesheet = global.datadir + '/theme/' + sessionMode.stylesheetName;
+    if (_defaultCssStylesheet == stylesheet)
+        return;
+
+    _defaultCssStylesheet = stylesheet;
+    loadTheme();
+}
+
 /**
  * getThemeStylesheet:
  *
@@ -497,9 +453,6 @@ function loadTheme() {
         cssStylesheet = _cssStylesheet;
 
     let theme = new St.Theme ({ application_stylesheet: cssStylesheet });
-
-    if (global.session_type == Shell.SessionType.GDM)
-        theme.load_stylesheet(_gdmCssStylesheet);
 
     if (previousTheme) {
         let customStylesheets = previousTheme.get_custom_stylesheets();
@@ -541,138 +494,6 @@ function notifyError(msg, details) {
     notify(msg, details);
 }
 
-/**
- * _log:
- * @category: string message type ('info', 'error')
- * @msg: A message string
- * ...: Any further arguments are converted into JSON notation,
- *      and appended to the log message, separated by spaces.
- *
- * Log a message into the LookingGlass error
- * stream.  This is primarily intended for use by the
- * extension system as well as debugging.
- */
-function _log(category, msg) {
-    let text = msg;
-    if (arguments.length > 2) {
-        text += ': ';
-        for (let i = 2; i < arguments.length; i++) {
-            text += JSON.stringify(arguments[i]);
-            if (i < arguments.length - 1)
-                text += ' ';
-        }
-    }
-    _errorLogStack.push({timestamp: new Date().getTime(),
-                         category: category,
-                         message: text });
-}
-
-function _logError(msg) {
-    return _log('error', msg);
-}
-
-function _logDebug(msg) {
-    return _log('debug', msg);
-}
-
-// Used by the error display in lookingGlass.js
-function _getAndClearErrorStack() {
-    let errors = _errorLogStack;
-    _errorLogStack = [];
-    return errors;
-}
-
-function logStackTrace(msg) {
-    try {
-        throw new Error();
-    } catch (e) {
-        // e.stack must have at least two lines, with the first being
-        // logStackTrace() (which we strip off), and the second being
-        // our caller.
-        let trace = e.stack.substr(e.stack.indexOf('\n') + 1);
-        log(msg ? (msg + '\n' + trace) : trace);
-    }
-}
-
-function isWindowActorDisplayedOnWorkspace(win, workspaceIndex) {
-    return win.get_workspace() == workspaceIndex ||
-        (win.get_meta_window() && win.get_meta_window().is_on_all_workspaces());
-}
-
-function getWindowActorsForWorkspace(workspaceIndex) {
-    return global.get_window_actors().filter(function (win) {
-        return isWindowActorDisplayedOnWorkspace(win, workspaceIndex);
-    });
-}
-
-// This function encapsulates hacks to make certain global keybindings
-// work even when we are in one of our modes where global keybindings
-// are disabled with a global grab. (When there is a global grab, then
-// all key events will be delivered to the stage, so ::captured-event
-// on the stage can be used for global keybindings.)
-function _globalKeyPressHandler(actor, event) {
-    if (modalCount == 0)
-        return false;
-    if (event.type() != Clutter.EventType.KEY_PRESS)
-        return false;
-
-    let symbol = event.get_key_symbol();
-    let keyCode = event.get_key_code();
-    let ignoredModifiers = global.display.get_ignored_modifier_mask();
-    let modifierState = event.get_state() & ~ignoredModifiers;
-
-    // This relies on the fact that Clutter.ModifierType is the same as Gdk.ModifierType
-    let action = global.display.get_keybinding_action(keyCode, modifierState);
-
-    // Other bindings are only available to the user session when the overview is up and
-    // no modal dialog is present.
-    if (global.session_type == Shell.SessionType.USER && (!overview.visible || modalCount > 1))
-        return false;
-
-    // This isn't a Meta.KeyBindingAction yet
-    if (symbol == Clutter.Super_L || symbol == Clutter.Super_R) {
-        overview.hide();
-        return true;
-    }
-
-    if (action == Meta.KeyBindingAction.SWITCH_PANELS) {
-        ctrlAltTabManager.popup(modifierState & Clutter.ModifierType.SHIFT_MASK,
-                                modifierState);
-        return true;
-    }
-
-    // None of the other bindings are relevant outside of the user's session
-    if (global.session_type != Shell.SessionType.USER)
-        return false;
-
-    switch (action) {
-        // left/right would effectively act as synonyms for up/down if we enabled them;
-        // but that could be considered confusing; we also disable them in the main view.
-        //
-        // case Meta.KeyBindingAction.WORKSPACE_LEFT:
-        //     wm.actionMoveWorkspaceLeft();
-        //     return true;
-        // case Meta.KeyBindingAction.WORKSPACE_RIGHT:
-        //     wm.actionMoveWorkspaceRight();
-        //     return true;
-        case Meta.KeyBindingAction.WORKSPACE_UP:
-            wm.actionMoveWorkspaceUp();
-            return true;
-        case Meta.KeyBindingAction.WORKSPACE_DOWN:
-            wm.actionMoveWorkspaceDown();
-            return true;
-        case Meta.KeyBindingAction.PANEL_RUN_DIALOG:
-        case Meta.KeyBindingAction.COMMAND_2:
-            getRunDialog().open();
-            return true;
-        case Meta.KeyBindingAction.PANEL_MAIN_MENU:
-            overview.hide();
-            return true;
-    }
-
-    return false;
-}
-
 function _findModal(actor) {
     for (let i = 0; i < modalActorFocusStack.length; i++) {
         if (modalActorFocusStack[i].actor == actor)
@@ -684,7 +505,7 @@ function _findModal(actor) {
 /**
  * pushModal:
  * @actor: #ClutterActor which will be given keyboard focus
- * @timestamp: optional timestamp
+ * @params: optional parameters
  *
  * Ensure we are in a mode where all keyboard and mouse input goes to
  * the stage, and focus @actor. Multiple calls to this function act in
@@ -695,24 +516,31 @@ function _findModal(actor) {
  * modal stack returns to this actor, reset the focus to the actor
  * which was focused at the time pushModal() was invoked.
  *
- * @timestamp is optionally used to associate the call with a specific user
- * initiated event.  If not provided then the value of
- * global.get_current_time() is assumed.
+ * @params may be used to provide the following parameters:
+ *  - timestamp: used to associate the call with a specific user initiated
+ *               event.  If not provided then the value of
+ *               global.get_current_time() is assumed.
  *
- * @options: optional Meta.ModalOptions flags to indicate that the
- *           pointer is alrady grabbed
+ *  - options: Meta.ModalOptions flags to indicate that the pointer is
+ *             already grabbed
+ *
+ *  - keybindingMode: used to set the current Shell.KeyBindingMode to filter
+ *                    global keybindings; the default of NONE will filter
+ *                    out all keybindings
  *
  * Returns: true iff we successfully acquired a grab or already had one
  */
-function pushModal(actor, timestamp, options) {
-    if (timestamp == undefined)
-        timestamp = global.get_current_time();
+function pushModal(actor, params) {
+    params = Params.parse(params, { timestamp: global.get_current_time(),
+                                    options: 0,
+                                    keybindingMode: Shell.KeyBindingMode.NONE });
 
     if (modalCount == 0) {
-        if (!global.begin_modal(timestamp, options ? options : 0)) {
+        if (!global.begin_modal(params.timestamp, params.options)) {
             log('pushModal: invocation of begin_modal failed');
             return false;
         }
+        Meta.disable_unredirect_for_screen(global.screen);
     }
 
     global.set_stage_input_mode(Shell.StageInputMode.FULLSCREEN);
@@ -721,22 +549,25 @@ function pushModal(actor, timestamp, options) {
     let actorDestroyId = actor.connect('destroy', function() {
         let index = _findModal(actor);
         if (index >= 0)
-            modalActorFocusStack.splice(index, 1);
+            popModal(actor);
     });
-    let curFocus = global.stage.get_key_focus();
-    let curFocusDestroyId;
-    if (curFocus != null) {
-        curFocusDestroyId = curFocus.connect('destroy', function() {
+
+    let prevFocus = global.stage.get_key_focus();
+    let prevFocusDestroyId;
+    if (prevFocus != null) {
+        prevFocusDestroyId = prevFocus.connect('destroy', function() {
             let index = _findModal(actor);
             if (index >= 0)
-                modalActorFocusStack[index].actor = null;
+                modalActorFocusStack[index].prevFocus = null;
         });
     }
     modalActorFocusStack.push({ actor: actor,
-                                focus: curFocus,
                                 destroyId: actorDestroyId,
-                                focusDestroyId: curFocusDestroyId });
+                                prevFocus: prevFocus,
+                                prevFocusDestroyId: prevFocusDestroyId,
+                                keybindingMode: keybindingMode });
 
+    keybindingMode = params.keybindingMode;
     global.stage.set_key_focus(actor);
     return true;
 }
@@ -763,6 +594,7 @@ function popModal(actor, timestamp) {
         global.stage.set_key_focus(null);
         global.end_modal(timestamp);
         global.set_stage_input_mode(Shell.StageInputMode.NORMAL);
+        keybindingMode = Shell.KeyBindingMode.NORMAL;
 
         throw new Error('incorrect pop');
     }
@@ -773,17 +605,34 @@ function popModal(actor, timestamp) {
     record.actor.disconnect(record.destroyId);
 
     if (focusIndex == modalActorFocusStack.length - 1) {
-        if (record.focus)
-            record.focus.disconnect(record.focusDestroyId);
-        global.stage.set_key_focus(record.focus);
+        if (record.prevFocus)
+            record.prevFocus.disconnect(record.prevFocusDestroyId);
+        keybindingMode = record.keybindingMode;
+        global.stage.set_key_focus(record.prevFocus);
     } else {
+        // If we have:
+        //     global.stage.set_focus(a);
+        //     Main.pushModal(b);
+        //     Main.pushModal(c);
+        //     Main.pushModal(d);
+        //
+        // then we have the stack:
+        //     [{ prevFocus: a, actor: b },
+        //      { prevFocus: b, actor: c },
+        //      { prevFocus: c, actor: d }]
+        //
+        // When actor c is destroyed/popped, if we only simply remove the
+        // record, then the focus stack will be [a, c], rather than the correct
+        // [a, b]. Shift the focus stack up before removing the record to ensure
+        // that we get the correct result.
         let t = modalActorFocusStack[modalActorFocusStack.length - 1];
-        if (t.focus)
-            t.focus.disconnect(t.focusDestroyId);
+        if (t.prevFocus)
+            t.prevFocus.disconnect(t.prevFocusDestroyId);
         // Remove from the middle, shift the focus chain up
         for (let i = modalActorFocusStack.length - 1; i > focusIndex; i--) {
-            modalActorFocusStack[i].focus = modalActorFocusStack[i - 1].focus;
-            modalActorFocusStack[i].focusDestroyId = modalActorFocusStack[i - 1].focusDestroyId;
+            modalActorFocusStack[i].prevFocus = modalActorFocusStack[i - 1].prevFocus;
+            modalActorFocusStack[i].prevFocusDestroyId = modalActorFocusStack[i - 1].prevFocusDestroyId;
+            modalActorFocusStack[i].keybindingMode = modalActorFocusStack[i - 1].keybindingMode;
         }
     }
     modalActorFocusStack.splice(focusIndex, 1);
@@ -793,6 +642,8 @@ function popModal(actor, timestamp) {
 
     global.end_modal(timestamp);
     global.set_stage_input_mode(Shell.StageInputMode.NORMAL);
+    Meta.enable_unredirect_for_screen(global.screen);
+    keybindingMode = Shell.KeyBindingMode.NORMAL;
 }
 
 function createLookingGlass() {
@@ -802,11 +653,11 @@ function createLookingGlass() {
     return lookingGlass;
 }
 
-function getRunDialog() {
+function openRunDialog() {
     if (runDialog == null) {
         runDialog = new RunDialog.RunDialog();
     }
-    return runDialog;
+    runDialog.open();
 }
 
 /**
@@ -935,7 +786,8 @@ function initializeDeferredWork(actor, callback, props) {
 function queueDeferredWork(workId) {
     let data = _deferredWorkData[workId];
     if (!data) {
-        global.logError('invalid work id ', workId);
+        let message = 'Invalid work id %d'.format(workId);
+        logError(new Error(message), message);
         return;
     }
     if (_deferredWorkQueue.indexOf(workId) < 0)

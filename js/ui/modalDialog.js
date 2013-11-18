@@ -14,13 +14,17 @@ const Atk = imports.gi.Atk;
 
 const Params = imports.misc.params;
 
+const Layout = imports.ui.layout;
 const Lightbox = imports.ui.lightbox;
 const Main = imports.ui.main;
 const Tweener = imports.ui.tweener;
 
 const OPEN_AND_CLOSE_TIME = 0.1;
-const FADE_IN_BUTTONS_TIME = 0.33;
 const FADE_OUT_DIALOG_TIME = 1.0;
+
+const WORK_SPINNER_ICON_SIZE = 24;
+const WORK_SPINNER_ANIMATION_DELAY = 1.0;
+const WORK_SPINNER_ANIMATION_TIME = 0.3;
 
 const State = {
     OPENED: 0,
@@ -35,17 +39,24 @@ const ModalDialog = new Lang.Class({
 
     _init: function(params) {
         params = Params.parse(params, { shellReactive: false,
-                                        styleClass: null });
+                                        styleClass: null,
+                                        parentActor: Main.uiGroup,
+                                        keybindingMode: Shell.KeyBindingMode.SYSTEM_MODAL,
+                                        shouldFadeIn: true,
+                                        destroyOnClose: true });
 
         this.state = State.CLOSED;
         this._hasModal = false;
+        this._keybindingMode = params.keybindingMode;
         this._shellReactive = params.shellReactive;
+        this._shouldFadeIn = params.shouldFadeIn;
+        this._destroyOnClose = params.destroyOnClose;
 
         this._group = new St.Widget({ visible: false,
                                       x: 0,
                                       y: 0,
                                       accessible_role: Atk.Role.DIALOG });
-        Main.uiGroup.add_actor(this._group);
+        params.parentActor.add_actor(this._group);
 
         let constraint = new Clutter.BindConstraint({ source: global.stage,
                                                       coordinate: Clutter.BindCoordinate.ALL });
@@ -53,16 +64,22 @@ const ModalDialog = new Lang.Class({
 
         this._group.connect('destroy', Lang.bind(this, this._onGroupDestroy));
 
-        this._actionKeys = {};
+        this._pressedKey = null;
+        this._buttonKeys = {};
         this._group.connect('key-press-event', Lang.bind(this, this._onKeyPressEvent));
+        this._group.connect('key-release-event', Lang.bind(this, this._onKeyReleaseEvent));
 
-        this._backgroundBin = new St.Bin();
+        this.backgroundStack = new St.Widget({ layout_manager: new Clutter.BinLayout() });
+        this._backgroundBin = new St.Bin({ child: this.backgroundStack,
+                                           x_fill: true, y_fill: true });
+        this._monitorConstraint = new Layout.MonitorConstraint();
+        this._backgroundBin.add_constraint(this._monitorConstraint);
         this._group.add_actor(this._backgroundBin);
 
-        this._dialogLayout = new St.BoxLayout({ style_class: 'modal-dialog',
-                                                vertical:    true });
+        this.dialogLayout = new St.BoxLayout({ style_class: 'modal-dialog',
+                                               vertical:    true });
         if (params.styleClass != null) {
-            this._dialogLayout.add_style_class_name(params.styleClass);
+            this.dialogLayout.add_style_class_name(params.styleClass);
         }
 
         if (!this._shellReactive) {
@@ -70,60 +87,48 @@ const ModalDialog = new Lang.Class({
                                                    { inhibitEvents: true });
             this._lightbox.highlight(this._backgroundBin);
 
-            let stack = new Shell.Stack();
-            this._backgroundBin.child = stack;
-
-            this._eventBlocker = new Clutter.Group({ reactive: true });
-            stack.add_actor(this._eventBlocker);
-            stack.add_actor(this._dialogLayout);
-        } else {
-            this._backgroundBin.child = this._dialogLayout;
+            this._eventBlocker = new Clutter.Actor({ reactive: true });
+            this.backgroundStack.add_actor(this._eventBlocker);
         }
+        this.backgroundStack.add_actor(this.dialogLayout);
 
 
         this.contentLayout = new St.BoxLayout({ vertical: true });
-        this._dialogLayout.add(this.contentLayout,
-                               { x_fill:  true,
-                                 y_fill:  true,
-                                 x_align: St.Align.MIDDLE,
-                                 y_align: St.Align.START });
+        this.dialogLayout.add(this.contentLayout,
+                              { x_fill:  true,
+                                y_fill:  true,
+                                x_align: St.Align.MIDDLE,
+                                y_align: St.Align.START });
 
-        this._buttonLayout = new St.BoxLayout({ style_class: 'modal-dialog-button-box',
-                                                visible:     false,
-                                                vertical:    false });
-        this._dialogLayout.add(this._buttonLayout,
-                               { expand:  true,
-                                 x_align: St.Align.MIDDLE,
-                                 y_align: St.Align.END });
+        this.buttonLayout = new St.BoxLayout({ style_class: 'modal-dialog-button-box',
+                                               vertical: false });
+        this.dialogLayout.add(this.buttonLayout,
+                              { expand:  true,
+                                x_align: St.Align.MIDDLE,
+                                y_align: St.Align.END });
 
-        global.focus_manager.add_group(this._dialogLayout);
-        this._initialKeyFocus = this._dialogLayout;
+        global.focus_manager.add_group(this.dialogLayout);
+        this._initialKeyFocus = this.dialogLayout;
         this._initialKeyFocusDestroyId = 0;
         this._savedKeyFocus = null;
+
+        this._workSpinner = null;
     },
 
     destroy: function() {
         this._group.destroy();
     },
 
+    clearButtons: function() {
+        this.buttonLayout.destroy_all_children();
+        this._buttonKeys = {};
+    },
+
     setButtons: function(buttons) {
-        let hadChildren = this._buttonLayout.get_children() > 0;
-
-        this._buttonLayout.destroy_all_children();
-        this._actionKeys = {};
-
-        this._buttonLayout.visible = (buttons.length > 0);
+        this.clearButtons();
 
         for (let i = 0; i < buttons.length; i++) {
             let buttonInfo = buttons[i];
-            let label = buttonInfo['label'];
-            let action = buttonInfo['action'];
-            let key = buttonInfo['key'];
-
-            buttonInfo.button = new St.Button({ style_class: 'modal-dialog-button',
-                                                reactive:    true,
-                                                can_focus:   true,
-                                                label:       label });
 
             let x_alignment;
             if (buttons.length == 1)
@@ -135,66 +140,137 @@ const ModalDialog = new Lang.Class({
             else
                 x_alignment = St.Align.MIDDLE;
 
-            if (!this._initialKeyFocusDestroyId)
-                this._initialKeyFocus = buttonInfo.button;
-            this._buttonLayout.add(buttonInfo.button,
-                                   { expand: true,
-                                     x_fill: false,
-                                     y_fill: false,
-                                     x_align: x_alignment,
-                                     y_align: St.Align.MIDDLE });
-
-            buttonInfo.button.connect('clicked', action);
-
-            if (key)
-                this._actionKeys[key] = action;
+            this.addButton(buttonInfo, { expand: true,
+                                         x_fill: false,
+                                         y_fill: false,
+                                         x_align: x_alignment,
+                                         y_align: St.Align.MIDDLE });
         }
-
-        // Fade in buttons if there weren't any before
-        if (!hadChildren && buttons.length > 0) {
-            this._buttonLayout.opacity = 0;
-            Tweener.addTween(this._buttonLayout,
-                             { opacity: 255,
-                               time: FADE_IN_BUTTONS_TIME,
-                               transition: 'easeOutQuad',
-                               onComplete: Lang.bind(this, function() {
-                                   this.emit('buttons-set');
-                               })
-                             });
-        } else {
-            this.emit('buttons-set');
-        }
-
     },
 
-    _onKeyPressEvent: function(object, keyPressEvent) {
-        let symbol = keyPressEvent.get_key_symbol();
-        let action = this._actionKeys[symbol];
+    addButton: function(buttonInfo, layoutInfo) {
+        let label = buttonInfo['label'];
+        let action = buttonInfo['action'];
+        let key = buttonInfo['key'];
+        let isDefault = buttonInfo['default'];
 
-        if (action)
+        let keys;
+
+        if (key)
+            keys = [key];
+        else if (isDefault)
+            keys = [Clutter.KEY_Return, Clutter.KEY_KP_Enter, Clutter.KEY_ISO_Enter];
+        else
+            keys = [];
+
+        let button = new St.Button({ style_class: 'modal-dialog-button',
+                                     button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE,
+                                     reactive:    true,
+                                     can_focus:   true,
+                                     label:       label });
+        button.connect('clicked', action);
+
+        buttonInfo['button'] = button;
+
+        if (isDefault)
+            button.add_style_pseudo_class('default');
+
+        if (!this._initialKeyFocusDestroyId)
+            this._initialKeyFocus = button;
+
+        for (let i in keys)
+            this._buttonKeys[keys[i]] = buttonInfo;
+
+        this.buttonLayout.add(button, layoutInfo);
+
+        return button;
+    },
+
+    placeSpinner: function(layoutInfo) {
+        /* This is here because of recursive imports */
+        const Panel = imports.ui.panel;
+        let spinnerIcon = global.datadir + '/theme/process-working.svg';
+        this._workSpinner = new Panel.AnimatedIcon(spinnerIcon, WORK_SPINNER_ICON_SIZE);
+        this._workSpinner.actor.opacity = 0;
+        this._workSpinner.actor.show();
+
+        this.buttonLayout.add(this._workSpinner.actor, layoutInfo);
+    },
+
+    setWorking: function(working) {
+        if (!this._workSpinner)
+            return;
+
+        Tweener.removeTweens(this._workSpinner.actor);
+        if (working) {
+            this._workSpinner.play();
+            Tweener.addTween(this._workSpinner.actor,
+                             { opacity: 255,
+                               delay: WORK_SPINNER_ANIMATION_DELAY,
+                               time: WORK_SPINNER_ANIMATION_TIME,
+                               transition: 'linear'
+                             });
+        } else {
+            Tweener.addTween(this._workSpinner.actor,
+                             { opacity: 0,
+                               time: WORK_SPINNER_ANIMATION_TIME,
+                               transition: 'linear',
+                               onCompleteScope: this,
+                               onComplete: function() {
+                                   if (this._workSpinner)
+                                       this._workSpinner.stop();
+                               }
+                             });
+        }
+    },
+
+    _onKeyPressEvent: function(object, event) {
+        this._pressedKey = event.get_key_symbol();
+    },
+
+    _onKeyReleaseEvent: function(object, event) {
+        let pressedKey = this._pressedKey;
+        this._pressedKey = null;
+
+        let symbol = event.get_key_symbol();
+        if (symbol != pressedKey)
+            return false;
+
+        let buttonInfo = this._buttonKeys[symbol];
+        if (!buttonInfo)
+            return false;
+
+        let button = buttonInfo['button'];
+        let action = buttonInfo['action'];
+
+        if (action && button.reactive) {
             action();
+            return true;
+        }
+
+        return false;
     },
 
     _onGroupDestroy: function() {
         this.emit('destroy');
     },
 
-    _fadeOpen: function() {
-        let monitor = Main.layoutManager.focusMonitor;
-
-        this._backgroundBin.set_position(monitor.x, monitor.y);
-        this._backgroundBin.set_size(monitor.width, monitor.height);
+    _fadeOpen: function(onPrimary) {
+        if (onPrimary)
+            this._monitorConstraint.primary = true;
+        else
+            this._monitorConstraint.index = global.screen.get_current_monitor();
 
         this.state = State.OPENING;
 
-        this._dialogLayout.opacity = 255;
+        this.dialogLayout.opacity = 255;
         if (this._lightbox)
             this._lightbox.show();
         this._group.opacity = 0;
         this._group.show();
         Tweener.addTween(this._group,
                          { opacity: 255,
-                           time: OPEN_AND_CLOSE_TIME,
+                           time: this._shouldFadeIn ? OPEN_AND_CLOSE_TIME : 0,
                            transition: 'easeOutQuad',
                            onComplete: Lang.bind(this,
                                function() {
@@ -211,19 +287,19 @@ const ModalDialog = new Lang.Class({
         this._initialKeyFocus = actor;
 
         this._initialKeyFocusDestroyId = actor.connect('destroy', Lang.bind(this, function() {
-            this._initialKeyFocus = this._dialogLayout;
+            this._initialKeyFocus = this.dialogLayout;
             this._initialKeyFocusDestroyId = 0;
         }));
     },
 
-    open: function(timestamp) {
+    open: function(timestamp, onPrimary) {
         if (this.state == State.OPENED || this.state == State.OPENING)
             return true;
 
-        if (!this.pushModal(timestamp))
+        if (!this.pushModal({ timestamp: timestamp }))
             return false;
 
-        this._fadeOpen();
+        this._fadeOpen(onPrimary);
         return true;
     },
 
@@ -243,6 +319,10 @@ const ModalDialog = new Lang.Class({
                                function() {
                                    this.state = State.CLOSED;
                                    this._group.hide();
+                                   this.emit('closed');
+
+                                   if (this._destroyOnClose)
+                                       this.destroy();
                                })
                          });
     },
@@ -270,7 +350,8 @@ const ModalDialog = new Lang.Class({
     pushModal: function (timestamp) {
         if (this._hasModal)
             return true;
-        if (!Main.pushModal(this._group, timestamp))
+        if (!Main.pushModal(this._group, { timestamp: timestamp,
+                                           keybindingMode: this._keybindingMode }))
             return false;
 
         this._hasModal = true;
@@ -304,7 +385,7 @@ const ModalDialog = new Lang.Class({
             return;
 
         this.popModal(timestamp);
-        Tweener.addTween(this._dialogLayout,
+        Tweener.addTween(this.dialogLayout,
                          { opacity: 0,
                            time:    FADE_OUT_DIALOG_TIME,
                            transition: 'easeOutQuad',

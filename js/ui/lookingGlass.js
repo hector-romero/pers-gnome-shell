@@ -12,15 +12,17 @@ const Shell = imports.gi.Shell;
 const Signals = imports.signals;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
+const System = imports.system;
 
 const History = imports.misc.history;
 const ExtensionSystem = imports.ui.extensionSystem;
 const ExtensionUtils = imports.misc.extensionUtils;
-const Link = imports.ui.link;
 const ShellEntry = imports.ui.shellEntry;
 const Tweener = imports.ui.tweener;
 const Main = imports.ui.main;
 const JsParse = imports.misc.jsParse;
+
+const CHEVRON = '>>> ';
 
 /* Imports...feel free to add here as needed */
 var commandHeader = 'const Clutter = imports.gi.Clutter; ' +
@@ -36,9 +38,9 @@ var commandHeader = 'const Clutter = imports.gi.Clutter; ' +
                     /* Utility functions...we should probably be able to use these
                      * in the shell core code too. */
                     'const stage = global.stage; ' +
-                    'const color = function(pixel) { let c= new Clutter.Color(); c.from_pixel(pixel); return c; }; ' +
                     /* Special lookingGlass functions */
-                       'const it = Main.lookingGlass.getIt(); ' +
+                    'const inspect = Lang.bind(Main.lookingGlass, Main.lookingGlass.inspect); ' +
+                    'const it = Main.lookingGlass.getIt(); ' +
                     'const r = Lang.bind(Main.lookingGlass, Main.lookingGlass.getResult); ';
 
 const HISTORY_KEY = 'looking-glass-history';
@@ -261,9 +263,8 @@ function objectToString(o) {
 
 const ObjLink = new Lang.Class({
     Name: 'ObjLink',
-    Extends: Link.Link,
 
-    _init: function(o, title) {
+    _init: function(lookingGlass, o, title) {
         let text;
         if (title)
             text = title;
@@ -272,24 +273,30 @@ const ObjLink = new Lang.Class({
         text = GLib.markup_escape_text(text, -1);
         this._obj = o;
 
-        this.parent({ label: text });
+        this.actor = new St.Button({ reactive: true,
+                                     track_hover: true,
+                                     style_class: 'shell-link',
+                                     label: text });
         this.actor.get_child().single_line_mode = true;
         this.actor.connect('clicked', Lang.bind(this, this._onClicked));
+
+        this._lookingGlass = lookingGlass;
     },
 
     _onClicked: function (link) {
-        Main.lookingGlass.inspectObject(this._obj, this.actor);
+        this._lookingGlass.inspectObject(this._obj, this.actor);
     }
 });
 
 const Result = new Lang.Class({
     Name: 'Result',
 
-    _init : function(command, o, index) {
+    _init: function(lookingGlass, command, o, index) {
         this.index = index;
         this.o = o;
 
         this.actor = new St.BoxLayout({ vertical: true });
+        this._lookingGlass = lookingGlass;
 
         let cmdTxt = new St.Label({ text: command });
         cmdTxt.clutter_text.ellipsize = Pango.EllipsizeMode.END;
@@ -299,7 +306,7 @@ const Result = new Lang.Class({
         let resultTxt = new St.Label({ text: 'r(' + index + ') = ' });
         resultTxt.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         box.add(resultTxt);
-        let objLink = new ObjLink(o);
+        let objLink = new ObjLink(this._lookingGlass, o);
         box.add(objLink.actor);
         let line = new Clutter.Rectangle({ name: 'Separator' });
         let padBin = new St.Bin({ name: 'Separator', x_fill: true, y_fill: true });
@@ -311,16 +318,18 @@ const Result = new Lang.Class({
 const WindowList = new Lang.Class({
     Name: 'WindowList',
 
-    _init : function () {
+    _init: function(lookingGlass) {
         this.actor = new St.BoxLayout({ name: 'Windows', vertical: true, style: 'spacing: 8px' });
         let tracker = Shell.WindowTracker.get_default();
         this._updateId = Main.initializeDeferredWork(this.actor, Lang.bind(this, this._updateWindowList));
         global.display.connect('window-created', Lang.bind(this, this._updateWindowList));
         tracker.connect('tracked-windows-changed', Lang.bind(this, this._updateWindowList));
+
+        this._lookingGlass = lookingGlass;
     },
 
     _updateWindowList: function() {
-        this.actor.get_children().forEach(function (actor) { actor.destroy(); });
+        this.actor.destroy_all_children();
         let windows = global.get_window_actors();
         let tracker = Shell.WindowTracker.get_default();
         for (let i = 0; i < windows.length; i++) {
@@ -332,7 +341,7 @@ const WindowList = new Lang.Class({
             }
             let box = new St.BoxLayout({ vertical: true });
             this.actor.add(box);
-            let windowLink = new ObjLink(metaWindow, metaWindow.title);
+            let windowLink = new ObjLink(this._lookingGlass, metaWindow, metaWindow.title);
             box.add(windowLink.actor, { x_align: St.Align.START, x_fill: false });
             let propsBox = new St.BoxLayout({ vertical: true, style: 'padding-left: 6px;' });
             box.add(propsBox);
@@ -343,7 +352,7 @@ const WindowList = new Lang.Class({
                 let propBox = new St.BoxLayout({ style: 'spacing: 6px; ' });
                 propsBox.add(propBox);
                 propBox.add(new St.Label({ text: 'app: ' }), { y_fill: false });
-                let appLink = new ObjLink(app, app.get_id());
+                let appLink = new ObjLink(this._lookingGlass, app, app.get_id());
                 propBox.add(appLink.actor, { y_fill: false });
                 propBox.add(icon, { y_fill: false });
             } else {
@@ -357,18 +366,21 @@ Signals.addSignalMethods(WindowList.prototype);
 const ObjInspector = new Lang.Class({
     Name: 'ObjInspector',
 
-    _init : function () {
+    _init: function(lookingGlass) {
         this._obj = null;
         this._previousObj = null;
 
         this._parentList = [];
 
-        this.actor = new St.ScrollView({ x_fill: true, y_fill: true });
+        this.actor = new St.ScrollView({ pivot_point: new Clutter.Point({ x: 0.5, y: 0.5 }),
+                                         x_fill: true, y_fill: true });
         this.actor.get_hscroll_bar().hide();
         this._container = new St.BoxLayout({ name: 'LookingGlassPropertyInspector',
                                              style_class: 'lg-dialog',
                                              vertical: true });
         this.actor.add_actor(this._container);
+
+        this._lookingGlass = lookingGlass;
     },
 
     selectObject: function(obj, skipPrevious) {
@@ -378,7 +390,7 @@ const ObjInspector = new Lang.Class({
             this._previousObj = null;
         this._obj = obj;
 
-        this._container.get_children().forEach(function (child) { child.destroy(); });
+        this._container.destroy_all_children();
 
         let hbox = new St.BoxLayout({ style_class: 'lg-obj-inspector-title' });
         this._container.add_actor(hbox);
@@ -412,7 +424,7 @@ const ObjInspector = new Lang.Class({
                 let link;
                 try {
                     let prop = obj[propName];
-                    link = new ObjLink(prop).actor;
+                    link = new ObjLink(this._lookingGlass, prop).actor;
                 } catch (e) {
                     link = new St.Label({ text: '<error>' });
                 }
@@ -433,10 +445,6 @@ const ObjInspector = new Lang.Class({
         this.actor.show();
         if (sourceActor) {
             this.actor.set_scale(0, 0);
-            let [sourceX, sourceY] = sourceActor.get_transformed_position();
-            let [sourceWidth, sourceHeight] = sourceActor.get_transformed_size();
-            this.actor.move_anchor_point(Math.floor(sourceX + sourceWidth / 2),
-                                         Math.floor(sourceY + sourceHeight / 2));
             Tweener.addTween(this.actor, { scale_x: 1, scale_y: 1,
                                            transition: 'easeOutQuad',
                                            time: 0.2 });
@@ -457,7 +465,7 @@ const ObjInspector = new Lang.Class({
     _onInsert: function() {
         let obj = this._obj;
         this.close();
-        Main.lookingGlass.insertObject(obj);
+        this._lookingGlass.insertObject(obj);
     },
 
     _onBack: function() {
@@ -465,34 +473,36 @@ const ObjInspector = new Lang.Class({
     }
 });
 
-function addBorderPaintHook(actor) {
-    let signalId = actor.connect_after('paint',
-        function () {
-            let color = new Cogl.Color();
-            color.init_from_4ub(0xff, 0, 0, 0xc4);
-            Cogl.set_source_color(color);
+const RedBorderEffect = new Lang.Class({
+    Name: 'RedBorderEffect',
+    Extends: Clutter.Effect,
 
-            let geom = actor.get_allocation_geometry();
-            let width = 2;
+    vfunc_paint: function() {
+        let actor = this.get_actor();
+        actor.continue_paint();
 
-            // clockwise order
-            Cogl.rectangle(0, 0, geom.width, width);
-            Cogl.rectangle(geom.width - width, width,
-                           geom.width, geom.height);
-            Cogl.rectangle(0, geom.height,
-                           geom.width - width, geom.height - width);
-            Cogl.rectangle(0, geom.height - width,
-                           width, width);
-        });
+        let color = new Cogl.Color();
+        color.init_from_4ub(0xff, 0, 0, 0xc4);
+        Cogl.set_source_color(color);
 
-    actor.queue_redraw();
-    return signalId;
-}
+        let geom = actor.get_allocation_geometry();
+        let width = 2;
+
+        // clockwise order
+        Cogl.rectangle(0, 0, geom.width, width);
+        Cogl.rectangle(geom.width - width, width,
+                       geom.width, geom.height);
+        Cogl.rectangle(0, geom.height,
+                       geom.width - width, geom.height - width);
+        Cogl.rectangle(0, geom.height - width,
+                       width, width);
+    },
+});
 
 const Inspector = new Lang.Class({
     Name: 'Inspector',
 
-    _init: function() {
+    _init: function(lookingGlass) {
         let container = new Shell.GenericContainer({ width: 0,
                                                      height: 0 });
         container.connect('allocate', Lang.bind(this, this._allocate));
@@ -506,9 +516,6 @@ const Inspector = new Lang.Class({
         this._displayText = new St.Label();
         eventHandler.add(this._displayText, { expand: true });
 
-        this._borderPaintTarget = null;
-        this._borderPaintId = null;
-        eventHandler.connect('destroy', Lang.bind(this, this._onDestroy));
         eventHandler.connect('key-press-event', Lang.bind(this, this._onKeyPressEvent));
         eventHandler.connect('button-press-event', Lang.bind(this, this._onButtonPressEvent));
         eventHandler.connect('scroll-event', Lang.bind(this, this._onScrollEvent));
@@ -523,6 +530,8 @@ const Inspector = new Lang.Class({
         // out, or move the pointer outside of _pointerTarget.
         this._target = null;
         this._pointerTarget = null;
+
+        this._lookingGlass = lookingGlass;
     },
 
     _allocate: function(actor, box, flags) {
@@ -543,16 +552,11 @@ const Inspector = new Lang.Class({
     },
 
     _close: function() {
-        Clutter.ungrab_pointer(this._eventHandler);
-        Clutter.ungrab_keyboard(this._eventHandler);
+        Clutter.ungrab_pointer();
+        Clutter.ungrab_keyboard();
         this._eventHandler.destroy();
         this._eventHandler = null;
         this.emit('closed');
-    },
-
-    _onDestroy: function() {
-        if (this._borderPaintTarget != null)
-            this._borderPaintTarget.disconnect(this._borderPaintId);
     },
 
     _onKeyPressEvent: function (actor, event) {
@@ -623,55 +627,11 @@ const Inspector = new Lang.Class({
         this._displayText.text = '';
         this._displayText.text = position + ' ' + this._target;
 
-        if (this._borderPaintTarget != this._target) {
-            if (this._borderPaintTarget != null)
-                this._borderPaintTarget.disconnect(this._borderPaintId);
-            this._borderPaintTarget = this._target;
-            this._borderPaintId = addBorderPaintHook(this._target);
-        }
+        this._lookingGlass.setBorderPaintTarget(this._target);
     }
 });
 
 Signals.addSignalMethods(Inspector.prototype);
-
-const ErrorLog = new Lang.Class({
-    Name: 'ErrorLog',
-
-    _init: function() {
-        this.actor = new St.BoxLayout();
-        this.text = new St.Label();
-        this.actor.add(this.text);
-        // We need to override StLabel's default ellipsization when
-        // using line_wrap; otherwise ClutterText's layout is going
-        // to constrain both the width and height, which prevents
-        // scrolling.
-        this.text.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
-        this.text.clutter_text.line_wrap = true;
-        this.actor.connect('notify::mapped', Lang.bind(this, this._renderText));
-    },
-
-    _formatTime: function(d){
-        function pad(n) { return n < 10 ? '0' + n : n; }
-        return d.getUTCFullYear()+'-'
-            + pad(d.getUTCMonth()+1)+'-'
-            + pad(d.getUTCDate())+'T'
-            + pad(d.getUTCHours())+':'
-            + pad(d.getUTCMinutes())+':'
-            + pad(d.getUTCSeconds())+'Z';
-    },
-
-    _renderText: function() {
-        if (!this.actor.mapped)
-            return;
-        let text = this.text.text;
-        let stack = Main._getAndClearErrorStack();
-        for (let i = 0; i < stack.length; i++) {
-            let logItem = stack[i];
-            text += logItem.category + ' t=' + this._formatTime(new Date(logItem.timestamp)) + ' ' + logItem.message + '\n';
-        }
-        this.text.text = text;
-    }
-});
 
 const Memory = new Lang.Class({
     Name: 'Memory',
@@ -701,7 +661,7 @@ const Memory = new Lang.Class({
 
         this._gcbutton = new St.Button({ label: 'Full GC',
                                          style_class: 'lg-obj-inspector-button' });
-        this._gcbutton.connect('clicked', Lang.bind(this, function () { global.gc(); this._renderText(); }));
+        this._gcbutton.connect('clicked', Lang.bind(this, function () { System.gc(); this._renderText(); }));
         this.actor.add(this._gcbutton, { x_align: St.Align.START,
                                          x_fill: false });
 
@@ -725,7 +685,8 @@ const Memory = new Lang.Class({
 const Extensions = new Lang.Class({
     Name: 'Extensions',
 
-    _init: function() {
+    _init: function(lookingGlass) {
+        this._lookingGlass = lookingGlass;
         this.actor = new St.BoxLayout({ vertical: true,
                                         name: 'lookingGlassExtensions' });
         this._noExtensions = new St.Label({ style_class: 'lg-extensions-none',
@@ -762,13 +723,13 @@ const Extensions = new Lang.Class({
         let extension = actor._extension;
         let uri = extension.dir.get_uri();
         Gio.app_info_launch_default_for_uri(uri, global.create_app_launch_context());
-        Main.lookingGlass.close();
+        this._lookingGlass.close();
     },
 
     _onWebPage: function (actor) {
         let extension = actor._extension;
         Gio.app_info_launch_default_for_uri(extension.metadata.url, global.create_app_launch_context());
-        Main.lookingGlass.close();
+        this._lookingGlass.close();
     },
 
     _onViewErrors: function (actor) {
@@ -832,24 +793,33 @@ const Extensions = new Lang.Class({
                                    text: this._stateToString(extension.state) });
         metaBox.add(state);
 
-        let viewsource = new Link.Link({ label: _("View Source") });
-        viewsource.actor._extension = extension;
-        viewsource.actor.connect('clicked', Lang.bind(this, this._onViewSource));
-        metaBox.add(viewsource.actor);
+        let viewsource = new St.Button({ reactive: true,
+                                         track_hover: true,
+                                         style_class: 'shell-link',
+                                         label: _("View Source") });
+        viewsource._extension = extension;
+        viewsource.connect('clicked', Lang.bind(this, this._onViewSource));
+        metaBox.add(viewsource);
 
         if (extension.metadata.url) {
-            let webpage = new Link.Link({ label: _("Web Page") });
-            webpage.actor._extension = extension;
-            webpage.actor.connect('clicked', Lang.bind(this, this._onWebPage));
-            metaBox.add(webpage.actor);
+            let webpage = new St.Button({ reactive: true,
+                                          track_hover: true,
+                                          style_class: 'shell-link',
+                                          label: _("Web Page") });
+            webpage._extension = extension;
+            webpage.connect('clicked', Lang.bind(this, this._onWebPage));
+            metaBox.add(webpage);
         }
 
-        let viewerrors = new Link.Link({ label: _("Show Errors") });
-        viewerrors.actor._extension = extension;
-        viewerrors.actor._parentBox = box;
-        viewerrors.actor._isShowing = false;
-        viewerrors.actor.connect('clicked', Lang.bind(this, this._onViewErrors));
-        metaBox.add(viewerrors.actor);
+        let viewerrors = new St.Button({ reactive: true,
+                                         track_hover: true,
+                                         style_class: 'shell-link',
+                                         label: _("Show Errors") });
+        viewerrors._extension = extension;
+        viewerrors._parentBox = box;
+        viewerrors._isShowing = false;
+        viewerrors.connect('clicked', Lang.bind(this, this._onViewErrors));
+        metaBox.add(viewerrors);
 
         return box;
     }
@@ -860,8 +830,7 @@ const LookingGlass = new Lang.Class({
 
     _init : function() {
         this._borderPaintTarget = null;
-        this._borderPaintId = 0;
-        this._borderDestroyId = 0;
+        this._redBorderEffect = new RedBorderEffect();
 
         this._open = false;
 
@@ -891,22 +860,20 @@ const LookingGlass = new Lang.Class({
         Main.layoutManager.keyboardBox.connect('allocation-changed',
                                                Lang.bind(this, this._queueResize));
 
-        this._objInspector = new ObjInspector();
+        this._objInspector = new ObjInspector(this);
         Main.uiGroup.add_actor(this._objInspector.actor);
         this._objInspector.actor.hide();
 
         let toolbar = new St.BoxLayout({ name: 'Toolbar' });
         this.actor.add_actor(toolbar);
         let inspectIcon = new St.Icon({ icon_name: 'gtk-color-picker',
-                                        icon_type: St.IconType.FULLCOLOR,
                                         icon_size: 24 });
         toolbar.add_actor(inspectIcon);
         inspectIcon.reactive = true;
         inspectIcon.connect('button-press-event', Lang.bind(this, function () {
-            let inspector = new Inspector();
+            let inspector = new Inspector(this);
             inspector.connect('target', Lang.bind(this, function(i, target, stageX, stageY) {
-                this._pushResult('<inspect x:' + stageX + ' y:' + stageY + '>',
-                                 target);
+                this._pushResult('inspect(' + Math.round(stageX) + ', ' + Math.round(stageY) + ')', target);
             }));
             inspector.connect('closed', Lang.bind(this, function() {
                 this.actor.show();
@@ -933,27 +900,20 @@ const LookingGlass = new Lang.Class({
         this._entryArea = new St.BoxLayout({ name: 'EntryArea' });
         this._evalBox.add_actor(this._entryArea);
 
-        let label = new St.Label({ text: 'js>>> ' });
+        let label = new St.Label({ text: CHEVRON });
         this._entryArea.add(label);
 
         this._entry = new St.Entry({ can_focus: true });
         ShellEntry.addContextMenu(this._entry);
         this._entryArea.add(this._entry, { expand: true });
 
-        this._windowList = new WindowList();
-        this._windowList.connect('selected', Lang.bind(this, function(list, window) {
-            notebook.selectIndex(0);
-            this._pushResult('<window selection>', window);
-        }));
+        this._windowList = new WindowList(this);
         notebook.appendPage('Windows', this._windowList.actor);
-
-        this._errorLog = new ErrorLog();
-        notebook.appendPage('Errors', this._errorLog.actor);
 
         this._memory = new Memory();
         notebook.appendPage('Memory', this._memory.actor);
 
-        this._extensions = new Extensions();
+        this._extensions = new Extensions(this);
         notebook.appendPage('Extensions', this._extensions.actor);
 
         this._entry.clutter_text.connect('activate', Lang.bind(this, function (o, e) {
@@ -991,9 +951,7 @@ const LookingGlass = new Lang.Class({
 
     _updateFont: function() {
         let fontName = this._interfaceSettings.get_string('monospace-font-name');
-        // This is mishandled by the scanner - should by Pango.FontDescription_from_string(fontName);
-        // https://bugzilla.gnome.org/show_bug.cgi?id=595889
-        let fontDesc = Pango.font_description_from_string(fontName);
+        let fontDesc = Pango.FontDescription.from_string(fontName);
         // We ignore everything but size and style; you'd be crazy to set your system-wide
         // monospace font to be bold/oblique/etc. Could easily be added here.
         this.actor.style =
@@ -1001,23 +959,22 @@ const LookingGlass = new Lang.Class({
             + 'font-family: "' + fontDesc.get_family() + '";';
     },
 
+    setBorderPaintTarget: function(obj) {
+        if (this._borderPaintTarget != null)
+            this._borderPaintTarget.remove_effect(this._redBorderEffect);
+        this._borderPaintTarget = obj;
+        if (this._borderPaintTarget != null)
+            this._borderPaintTarget.add_effect(this._redBorderEffect);
+    },
+
     _pushResult: function(command, obj) {
         let index = this._results.length + this._offset;
-        let result = new Result('>>> ' + command, obj, index);
+        let result = new Result(this, CHEVRON + command, obj, index);
         this._results.push(result);
         this._resultsArea.add(result.actor);
-        if (this._borderPaintTarget != null) {
-            this._borderPaintTarget.disconnect(this._borderPaintId);
-            this._borderPaintTarget = null;
-        }
-        if (obj instanceof Clutter.Actor) {
-            this._borderPaintTarget = obj;
-            this._borderPaintId = addBorderPaintHook(obj);
-            this._borderDestroyId = obj.connect('destroy', Lang.bind(this, function () {
-                this._borderDestroyId = 0;
-                this._borderPaintTarget = null;
-            }));
-        }
+        if (obj instanceof Clutter.Actor)
+            this.setBorderPaintTarget(obj);
+
         let children = this._resultsArea.get_children();
         if (children.length > this._maxItems) {
             this._results.shift();
@@ -1099,6 +1056,10 @@ const LookingGlass = new Lang.Class({
         this._entry.text = '';
     },
 
+    inspect: function(x, y) {
+        return global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, x, y);
+    },
+
     getIt: function () {
         return this._it;
     },
@@ -1131,8 +1092,8 @@ const LookingGlass = new Lang.Class({
         this.actor.width = myWidth;
         this.actor.height = myHeight;
         this._objInspector.actor.set_size(Math.floor(myWidth * 0.8), Math.floor(myHeight * 0.8));
-        this._objInspector.actor.set_position(this.actor.x + Math.floor(myWidth * 0.1),
-                                              this._targetY + Math.floor(myHeight * 0.1));
+        this._objInspector.actor.set_position(primary.x + this.actor.x + Math.floor(myWidth * 0.1),
+                                              primary.y + this._targetY + Math.floor(myHeight * 0.1));
     },
 
     insertObject: function(obj) {
@@ -1171,7 +1132,7 @@ const LookingGlass = new Lang.Class({
         if (this._open)
             return;
 
-        if (!Main.pushModal(this._entry))
+        if (!Main.pushModal(this._entry, { keybindingMode: Shell.KeyBindingMode.LOOKING_GLASS }))
             return;
 
         this._notebook.selectIndex(0);
@@ -1198,11 +1159,7 @@ const LookingGlass = new Lang.Class({
         this._open = false;
         Tweener.removeTweens(this.actor);
 
-        if (this._borderPaintTarget != null) {
-            this._borderPaintTarget.disconnect(this._borderPaintId);
-            this._borderPaintTarget.disconnect(this._borderDestroyId);
-            this._borderPaintTarget = null;
-        }
+        this.setBorderPaintTarget(null);
 
         Main.popModal(this._entry);
 

@@ -2,6 +2,7 @@
 
 const GLib = imports.gi.GLib;
 const Gio = imports.gi.Gio;
+const GnomeDesktop = imports.gi.GnomeDesktop;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
 const Cairo = imports.cairo;
@@ -16,14 +17,6 @@ const Main = imports.ui.main;
 const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
 const Calendar = imports.ui.calendar;
-const UPowerGlib = imports.gi.UPowerGlib;
-
-// in org.gnome.desktop.interface
-const CLOCK_FORMAT_KEY        = 'clock-format';
-
-// in org.gnome.shell.clock
-const CLOCK_SHOW_DATE_KEY     = 'show-date';
-const CLOCK_SHOW_SECONDS_KEY  = 'show-seconds';
 
 function _onVertSepRepaint (area)
 {
@@ -39,15 +32,14 @@ function _onVertSepRepaint (area)
     cr.setDash([1, 3], 1); // Hard-code for now
     cr.setLineWidth(stippleWidth);
     cr.stroke();
+    cr.$dispose();
 };
 
 const DateMenuButton = new Lang.Class({
     Name: 'DateMenuButton',
     Extends: PanelMenu.Button,
 
-    _init: function(params) {
-        params = Params.parse(params, { showEvents: true });
-
+    _init: function() {
         let item;
         let hbox;
         let vbox;
@@ -62,8 +54,8 @@ const DateMenuButton = new Lang.Class({
         // role ATK_ROLE_MENU like other elements of the panel.
         this.actor.accessible_role = Atk.Role.LABEL;
 
-        this._clock = new St.Label();
-        this.actor.add_actor(this._clock);
+        this._clockDisplay = new St.Label();
+        this.actor.add_actor(this._clockDisplay);
 
         hbox = new St.BoxLayout({name: 'calendarArea' });
         this.menu.addActor(hbox);
@@ -75,20 +67,12 @@ const DateMenuButton = new Lang.Class({
 
         // Date
         this._date = new St.Label();
-        this.actor.label_actor = this._date;
+        this.actor.label_actor = this._clockDisplay;
         this._date.style_class = 'datemenu-date-label';
         vbox.add(this._date);
 
-        if (params.showEvents) {
-            this._eventSource = new Calendar.DBusEventSource();
-            this._eventList = new Calendar.EventsList(this._eventSource);
-        } else {
-            this._eventSource = null;
-            this._eventList = null;
-        }
-
-        // Calendar
-        this._calendar = new Calendar.Calendar(this._eventSource);
+        this._eventList = new Calendar.EventsList();
+        this._calendar = new Calendar.Calendar();
 
         this._calendar.connect('selected-date-changed',
                                Lang.bind(this, function(calendar, date) {
@@ -100,38 +84,44 @@ const DateMenuButton = new Lang.Class({
                                }));
         vbox.add(this._calendar.actor);
 
-        item = this.menu.addSettingsAction(_("Date and Time Settings"), 'gnome-datetime-panel.desktop');
-        if (item) {
-            let separator = new PopupMenu.PopupSeparatorMenuItem();
-            separator.setColumnWidths(1);
-            vbox.add(separator.actor, {y_align: St.Align.END, expand: true, y_fill: false});
+        let separator = new PopupMenu.PopupSeparatorMenuItem();
+        separator.setColumnWidths(1);
+        vbox.add(separator.actor, {y_align: St.Align.END, expand: true, y_fill: false});
 
+        this._openCalendarItem = new PopupMenu.PopupMenuItem(_("Open Calendar"));
+        this._openCalendarItem.connect('activate', Lang.bind(this, this._onOpenCalendarActivate));
+        this._openCalendarItem.actor.can_focus = false;
+        vbox.add(this._openCalendarItem.actor, {y_align: St.Align.END, expand: true, y_fill: false});
+
+        this._openClocksItem = new PopupMenu.PopupMenuItem(_("Open Clocks"));
+        this._openClocksItem.connect('activate', Lang.bind(this, this._onOpenClocksActivate));
+        this._openClocksItem.actor.can_focus = false;
+        vbox.add(this._openClocksItem.actor, {y_align: St.Align.END, expand: true, y_fill: false});
+
+        Shell.AppSystem.get_default().connect('installed-changed',
+                                              Lang.bind(this, this._appInstalledChanged));
+
+        item = this.menu.addSettingsAction(_("Date & Time Settings"), 'gnome-datetime-panel.desktop');
+        if (item) {
+            item.actor.show_on_set_parent = false;
             item.actor.can_focus = false;
             item.actor.reparent(vbox);
+            this._dateAndTimeSeparator = separator;
         }
 
-//        if (params.showEvents) {
-//            // Add vertical separator
-//
-//            item = new St.DrawingArea({ style_class: 'calendar-vertical-separator',
-//                                        pseudo_class: 'highlighted' });
-//            item.connect('repaint', Lang.bind(this, _onVertSepRepaint));
-//            hbox.add(item);
-//
-//            // Fill up the second column
-//            vbox = new St.BoxLayout({name:     'calendarEventsArea',
-//                                     vertical: true});
-//            hbox.add(vbox, { expand: true });
-//
-//            // Event list
-//            vbox.add(this._eventList.actor, { expand: true });
-//
-//            item = new PopupMenu.PopupMenuItem(_("Open Calendar"));
-//            item.connect('activate', Lang.bind(this, this._onOpenCalendarActivate));
-//            item.actor.can_focus = false;
-//            vbox.add(item.actor, {y_align: St.Align.END, expand: true, y_fill: false});
-//        }
-//
+        this._separator = new St.DrawingArea({ style_class: 'calendar-vertical-separator',
+                                               pseudo_class: 'highlighted' });
+        this._separator.connect('repaint', Lang.bind(this, _onVertSepRepaint));
+//        hbox.add(this._separator);
+
+        // Fill up the second column
+        vbox = new St.BoxLayout({ name: 'calendarEventsArea',
+                                  vertical: true });
+//        hbox.add(vbox, { expand: true });
+
+        // Event list
+        vbox.add(this._eventList.actor, { expand: true });
+
         // Whenever the menu is opened, select today
         this.menu.connect('open-state-changed', Lang.bind(this, function(menu, isOpen) {
             if (isOpen) {
@@ -157,90 +147,105 @@ const DateMenuButton = new Lang.Class({
 
         // Done with hbox for calendar and event list
 
-        // Track changes to clock settings
-        this._desktopSettings = new Gio.Settings({ schema: 'org.gnome.desktop.interface' });
-        this._clockSettings = new Gio.Settings({ schema: 'org.gnome.shell.clock' });
-        this._desktopSettings.connect('changed', Lang.bind(this, this._updateClockAndDate));
-        this._clockSettings.connect('changed', Lang.bind(this, this._updateClockAndDate));
-
-        // https://bugzilla.gnome.org/show_bug.cgi?id=655129
-        this._upClient = new UPowerGlib.Client();
-        this._upClient.connect('notify-resume', Lang.bind(this, this._updateClockAndDate));
-
-        // Start the clock
+        this._clock = new GnomeDesktop.WallClock();
+        this._clock.connect('notify::clock', Lang.bind(this, this._updateClockAndDate));
         this._updateClockAndDate();
+
+        Main.sessionMode.connect('updated', Lang.bind(this, this._sessionUpdated));
+        this._sessionUpdated();
+    },
+
+    _appInstalledChanged: function() {
+        this._calendarApp = undefined;
+        this._updateEventsVisibility();
+    },
+
+    _updateEventsVisibility: function() {
+        let visible = this._eventSource.hasCalendars;
+        this._openCalendarItem.actor.visible = visible &&
+            (this._getCalendarApp() != null);
+        this._openClocksItem.actor.visible = visible &&
+            (this._getClockApp() != null);
+        this._separator.visible = visible;
+        if (visible) {
+          let alignment = 0.25;
+          if (Clutter.get_default_text_direction() == Clutter.TextDirection.RTL)
+            alignment = 1.0 - alignment;
+          this.menu._arrowAlignment = alignment;
+          this._eventList.actor.get_parent().show();
+        } else {
+          this.menu._arrowAlignment = 0.5;
+          this._eventList.actor.get_parent().hide();
+        }
+    },
+
+    _setEventSource: function(eventSource) {
+        if (this._eventSource)
+            this._eventSource.destroy();
+
+        this._calendar.setEventSource(eventSource);
+        this._eventList.setEventSource(eventSource);
+
+        this._eventSource = eventSource;
+        this._eventSource.connect('notify::has-calendars', Lang.bind(this, function() {
+            this._updateEventsVisibility();
+        }));
+    },
+
+    _sessionUpdated: function() {
+        let eventSource;
+        let showEvents = Main.sessionMode.showCalendarEvents;
+        if (showEvents) {
+            eventSource = new Calendar.DBusEventSource();
+        } else {
+            eventSource = new Calendar.EmptyEventSource();
+        }
+        this._setEventSource(eventSource);
+        this._updateEventsVisibility();
+
+        // This needs to be handled manually, as the code to
+        // autohide separators doesn't work across the vbox
+        this._dateAndTimeSeparator.actor.visible = Main.sessionMode.allowSettings;
     },
 
     _updateClockAndDate: function() {
-        let format = this._desktopSettings.get_string(CLOCK_FORMAT_KEY);
-        let showDate = this._clockSettings.get_boolean(CLOCK_SHOW_DATE_KEY);
-        let showSeconds = this._clockSettings.get_boolean(CLOCK_SHOW_SECONDS_KEY);
-
-        let clockFormat;
-        let dateFormat;
-
-        switch (format) {
-            case '24h':
-                if (showDate)
-                    /* Translators: This is the time format with date used
-                       in 24-hour mode. */
-                    clockFormat = showSeconds ? _("%a %b %e, %R:%S")
-                                              : _("%a %b %e, %R");
-                else
-                    /* Translators: This is the time format without date used
-                       in 24-hour mode. */
-                    clockFormat = showSeconds ? _("%a %R:%S")
-                                              : _("%a %R");
-                break;
-            case '12h':
-            default:
-                if (showDate)
-                    /* Translators: This is a time format with date used
-                       for AM/PM. */
-                    clockFormat = showSeconds ? _("%a %b %e, %l:%M:%S %p")
-                                              : _("%a %b %e, %l:%M %p");
-                else
-                    /* Translators: This is a time format without date used
-                       for AM/PM. */
-                    clockFormat = showSeconds ? _("%a %l:%M:%S %p")
-                                              : _("%a %l:%M %p");
-                break;
-        }
-
-        let displayDate = new Date();
-
-        this._clock.set_text(displayDate.toLocaleFormat(clockFormat));
-
+        this._clockDisplay.set_text(this._clock.clock);
         /* Translators: This is the date format to use when the calendar popup is
          * shown - it is shown just below the time in the shell (e.g. "Tue 9:29 AM").
          */
-        dateFormat = _("%A %B %e, %Y");
+        let dateFormat = _("%A %B %e, %Y");
+        let displayDate = new Date();
         this._date.set_text(displayDate.toLocaleFormat(dateFormat));
+    },
 
-        Mainloop.timeout_add_seconds(1, Lang.bind(this, this._updateClockAndDate));
-        return false;
+    _getCalendarApp: function() {
+        if (this._calendarApp !== undefined)
+            return this._calendarApp;
+
+        let apps = Gio.AppInfo.get_recommended_for_type('text/calendar');
+        if (apps && (apps.length > 0))
+            this._calendarApp = apps[0];
+        else
+            this._calendarApp = null;
+        return this._calendarApp;
+    },
+
+    _getClockApp: function() {
+        return Shell.AppSystem.get_default().lookup_app('gnome-clocks.desktop');
     },
 
     _onOpenCalendarActivate: function() {
         this.menu.close();
-        let calendarSettings = new Gio.Settings({ schema: 'org.gnome.desktop.default-applications.office.calendar' });
-        let tool = calendarSettings.get_string('exec');
-//        if (tool.length == 0 || tool == 'evolution') {
-//            // TODO: pass the selected day
-//            Util.spawn(['evolution', '-c', 'calendar']);
-//        } else {
-//            let needTerm = calendarSettings.get_boolean('needs-term');
-//            if (needTerm) {
-//                let terminalSettings = new Gio.Settings({ schema: 'org.gnome.desktop.default-applications.terminal' });
-//                let term = terminalSettings.get_string('exec');
-//                let arg = terminalSettings.get_string('exec-arg');
-//                if (arg != '')
-//                    Util.spawn([term, arg, tool]);
-//                else
-//                    Util.spawn([term, tool]);
-//            } else {
-//                Util.spawnCommandLine(tool)
-//            }
-//        }
+
+        let app = this._getCalendarApp();
+        if (app.get_id() == 'evolution.desktop')
+            app = Gio.DesktopAppInfo.new('evolution-calendar.desktop');
+        app.launch([], global.create_app_launch_context());
+    },
+
+    _onOpenClocksActivate: function() {
+        this.menu.close();
+        let app = this._getClockApp();
+        app.activate();
     }
 });

@@ -2,6 +2,7 @@
 
 const Clutter = imports.gi.Clutter;
 const Lang = imports.lang;
+const Main = imports.ui.main;
 const Shell = imports.gi.Shell;
 const Signals = imports.signals;
 const DND = imports.ui.dnd;
@@ -16,18 +17,11 @@ const XdndHandler = new Lang.Class({
 
         // Used as a drag actor in case we don't have a cursor window clone
         this._dummy = new Clutter.Rectangle({ width: 1, height: 1, opacity: 0 });
-        global.stage.add_actor(this._dummy);
+        Main.uiGroup.add_actor(this._dummy);
         Shell.util_set_hidden_from_pick(this._dummy, true);
         this._dummy.hide();
 
-        // Mutter delays the creation of the output window as long
-        // as possible to avoid flicker. In case a plugin wants to
-        // access it directly it has to connect to the stage's show
-        // signal. (see comment in compositor.c:meta_compositor_manage_screen)
-        global.stage.connect('show', function () {
-                                        global.init_xdnd();
-                                        return false;
-                                      });
+        global.init_xdnd();
 
         global.connect('xdnd-enter', Lang.bind(this, this._onEnter));
         global.connect('xdnd-position-changed', Lang.bind(this, this._onPositionChanged));
@@ -74,7 +68,7 @@ const XdndHandler = new Lang.Class({
                                                                    source: cursorWindow});
 
             this._cursorWindowClone = new Clutter.Clone({ source: cursorWindow });
-            global.overlay_group.add_actor(this._cursorWindowClone);
+            Main.uiGroup.add_actor(this._cursorWindowClone);
             Shell.util_set_hidden_from_pick(this._cursorWindowClone, true);
 
             // Make sure that the clone has the same position as the source
@@ -88,7 +82,7 @@ const XdndHandler = new Lang.Class({
     },
 
     _onPositionChanged: function(obj, x, y) {
-        let pickedActor = global.stage.get_actor_at_pos(Clutter.PickMode.ALL, x, y);
+        let pickedActor = global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, x, y);
 
         // Make sure that the cursor window is on top
         if (this._cursorWindowClone)

@@ -1,15 +1,19 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
-const Lang = imports.lang;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const Lang = imports.lang;
+const Meta = imports.gi.Meta;
 const Shell = imports.gi.Shell;
 
 const Config = imports.misc.config;
 const ExtensionSystem = imports.ui.extensionSystem;
+const ExtensionDownloader = imports.ui.extensionDownloader;
 const ExtensionUtils = imports.misc.extensionUtils;
-const Flashspot = imports.ui.flashspot;
+const Hash = imports.misc.hash;
 const Main = imports.ui.main;
+const Screencast = imports.ui.screencast;
+const Screenshot = imports.ui.screenshot;
 
 const GnomeShellIface = <interface name="org.gnome.Shell">
 <method name="Eval">
@@ -17,69 +21,46 @@ const GnomeShellIface = <interface name="org.gnome.Shell">
     <arg type="b" direction="out" name="success" />
     <arg type="s" direction="out" name="result" />
 </method>
-<method name="ListExtensions">
-    <arg type="a{sa{sv}}" direction="out" name="extensions" />
+<method name="FocusSearch"/>
+<method name="ShowOSD">
+    <arg type="a{sv}" direction="in" name="params"/>
 </method>
-<method name="GetExtensionInfo">
-    <arg type="s" direction="in" name="extension" />
-    <arg type="a{sv}" direction="out" name="info" />
+<method name="GrabAccelerator">
+    <arg type="s" direction="in" name="accelerator"/>
+    <arg type="u" direction="in" name="flags"/>
+    <arg type="u" direction="out" name="action"/>
 </method>
-<method name="GetExtensionErrors">
-    <arg type="s" direction="in" name="extension" />
-    <arg type="as" direction="out" name="errors" />
+<method name="GrabAccelerators">
+    <arg type="a(su)" direction="in" name="accelerators"/>
+    <arg type="au" direction="out" name="actions"/>
 </method>
-<method name="ScreenshotArea">
-    <arg type="i" direction="in" name="x"/>
-    <arg type="i" direction="in" name="y"/>
-    <arg type="i" direction="in" name="width"/>
-    <arg type="i" direction="in" name="height"/>
-    <arg type="b" direction="in" name="flash"/>
-    <arg type="s" direction="in" name="filename"/>
+<method name="UngrabAccelerator">
+    <arg type="u" direction="in" name="action"/>
     <arg type="b" direction="out" name="success"/>
 </method>
-<method name="ScreenshotWindow">
-    <arg type="b" direction="in" name="include_frame"/>
-    <arg type="b" direction="in" name="include_cursor"/>
-    <arg type="b" direction="in" name="flash"/>
-    <arg type="s" direction="in" name="filename"/>
-    <arg type="b" direction="out" name="success"/>
-</method>
-<method name="Screenshot">
-    <arg type="b" direction="in" name="include_cursor"/>
-    <arg type="b" direction="in" name="flash"/>
-    <arg type="s" direction="in" name="filename"/>
-    <arg type="b" direction="out" name="success"/>
-</method>
-<method name="FlashArea">
-    <arg type="i" direction="in" name="x"/>
-    <arg type="i" direction="in" name="y"/>
-    <arg type="i" direction="in" name="width"/>
-    <arg type="i" direction="in" name="height"/>
-</method>
-<method name="EnableExtension">
-    <arg type="s" direction="in" name="uuid"/>
-</method>
-<method name="DisableExtension">
-    <arg type="s" direction="in" name="uuid"/>
-</method>
-<method name="InstallRemoteExtension">
-    <arg type="s" direction="in" name="uuid"/>
-    <arg type="s" direction="in" name="version"/>
-</method>
-<method name="UninstallExtension">
-    <arg type="s" direction="in" name="uuid"/>
-    <arg type="b" direction="out" name="success"/>
-</method>
-<method name="LaunchExtensionPrefs">
-    <arg type="s" direction="in" name="uuid"/>
-</method>
+<signal name="AcceleratorActivated">
+    <arg name="action" type="u" />
+    <arg name="deviceid" type="u" />
+</signal>
+<property name="Mode" type="s" access="read" />
 <property name="OverviewActive" type="b" access="readwrite" />
-<property name="ApiVersion" type="i" access="read" />
 <property name="ShellVersion" type="s" access="read" />
-<signal name="ExtensionStatusChanged">
-    <arg type="s" name="uuid"/>
-    <arg type="i" name="state"/>
-    <arg type="s" name="error"/>
+</interface>;
+
+const ScreenSaverIface = <interface name="org.gnome.ScreenSaver">
+<method name="Lock">
+</method>
+<method name="GetActive">
+    <arg name="active" direction="out" type="b" />
+</method>
+<method name="SetActive">
+    <arg name="value" direction="in" type="b" />
+</method>
+<method name="GetActiveTime">
+    <arg name="value" direction="out" type="u" />
+</method>
+<signal name="ActiveChanged">
+    <arg name="new_value" type="b" />
 </signal>
 </interface>;
 
@@ -89,8 +70,18 @@ const GnomeShell = new Lang.Class({
     _init: function() {
         this._dbusImpl = Gio.DBusExportedObject.wrapJSObject(GnomeShellIface, this);
         this._dbusImpl.export(Gio.DBus.session, '/org/gnome/Shell');
-        ExtensionSystem.connect('extension-state-changed',
-                                Lang.bind(this, this._extensionStateChanged));
+
+        this._extensionsService = new GnomeShellExtensions();
+        this._screencastService = new Screencast.ScreencastService();
+        this._screenshotService = new Screenshot.ScreenshotService();
+
+        this._grabbedAccelerators = new Hash.Map();
+        this._grabbers = new Hash.Map();
+
+        global.display.connect('accelerator-activated', Lang.bind(this,
+            function(display, action, deviceid) {
+                this._emitAcceleratorActivated(action, deviceid);
+            }));
     },
 
     /**
@@ -109,7 +100,7 @@ const GnomeShell = new Lang.Class({
      */
     Eval: function(code) {
         if (!global.settings.get_boolean('development-tools'))
-            return [false, null];
+            return [false, ''];
 
         let returnValue;
         let success;
@@ -126,81 +117,168 @@ const GnomeShell = new Lang.Class({
         return [success, returnValue];
     },
 
-    _onScreenshotComplete: function(obj, result, area, flash, invocation) {
-        if (flash) {
-            let flashspot = new Flashspot.Flashspot(area);
-            flashspot.fire();
+    FocusSearch: function() {
+        Main.overview.focusSearch();
+    },
+
+    ShowOSD: function(params) {
+        for (let param in params)
+            params[param] = params[param].deep_unpack();
+
+        let icon = null;
+        if (params['icon'])
+            icon = Gio.Icon.new_for_string(params['icon']);
+
+        Main.osdWindow.setIcon(icon);
+        Main.osdWindow.setLabel(params['label']);
+        Main.osdWindow.setLevel(params['level']);
+
+        Main.osdWindow.show();
+    },
+
+    GrabAcceleratorAsync: function(params, invocation) {
+        let [accel, flags] = params;
+        let sender = invocation.get_sender();
+        let bindingAction = this._grabAcceleratorForSender(accel, flags, sender);
+        return invocation.return_value(GLib.Variant.new('(u)', [bindingAction]));
+    },
+
+    GrabAcceleratorsAsync: function(params, invocation) {
+        let [accels] = params;
+        let sender = invocation.get_sender();
+        let bindingActions = [];
+        for (let i = 0; i < accels.length; i++) {
+            let [accel, flags] = accels[i];
+            bindingActions.push(this._grabAcceleratorForSender(accel, flags, sender));
+        }
+        return invocation.return_value(GLib.Variant.new('(au)', [bindingActions]));
+    },
+
+    UngrabAcceleratorAsync: function(params, invocation) {
+        let [action] = params;
+        let grabbedBy = this._grabbedAccelerators.get(action);
+        if (invocation.get_sender() != grabbedBy)
+            return invocation.return_value(GLib.Variant.new('(b)', [false]));
+
+        let ungrabSucceeded = global.display.ungrab_accelerator(action);
+        if (ungrabSucceeded)
+            this._grabbedAccelerators.delete(action);
+        return invocation.return_value(GLib.Variant.new('(b)', [ungrabSucceeded]));
+    },
+
+    _emitAcceleratorActivated: function(action, deviceid) {
+        let destination = this._grabbedAccelerators.get(action);
+        if (!destination)
+            return;
+
+        let connection = this._dbusImpl.get_connection();
+        let info = this._dbusImpl.get_info();
+        connection.emit_signal(destination,
+                               this._dbusImpl.get_object_path(),
+                               info ? info.name : null,
+                               'AcceleratorActivated',
+                               GLib.Variant.new('(uu)', [action, deviceid]));
+    },
+
+    _grabAcceleratorForSender: function(accelerator, flags, sender) {
+        let bindingAction = global.display.grab_accelerator(accelerator);
+        if (bindingAction == Meta.KeyBindingAction.NONE)
+            return Meta.KeyBindingAction.NONE;
+
+        let bindingName = Meta.external_binding_name_for_action(bindingAction);
+        Main.wm.allowKeybinding(bindingName, flags);
+
+        this._grabbedAccelerators.set(bindingAction, sender);
+
+        if (!this._grabbers.has(sender)) {
+            let id = Gio.bus_watch_name(Gio.BusType.SESSION, sender, 0, null,
+                                        Lang.bind(this, this._onGrabberBusNameVanished));
+            this._grabbers.set(sender, id);
         }
 
-        let retval = GLib.Variant.new('(b)', [result]);
-        invocation.return_value(retval);
+        return bindingAction;
     },
 
-    /**
-     * ScreenshotArea:
-     * @x: The X coordinate of the area
-     * @y: The Y coordinate of the area
-     * @width: The width of the area
-     * @height: The height of the area
-     * @flash: Whether to flash the area or not
-     * @filename: The filename for the screenshot
-     *
-     * Takes a screenshot of the passed in area and saves it
-     * in @filename as png image, it returns a boolean
-     * indicating whether the operation was successful or not.
-     *
-     */
-    ScreenshotAreaAsync : function (params, invocation) {
-        let [x, y, width, height, flash, filename, callback] = params;
-        let screenshot = new Shell.Screenshot();
-        screenshot.screenshot_area (x, y, width, height, filename,
-                                Lang.bind(this, this._onScreenshotComplete,
-                                          flash, invocation));
+    _ungrabAccelerator: function(action) {
+        let ungrabSucceeded = global.display.ungrab_accelerator(action);
+        if (ungrabSucceeded)
+            this._grabbedAccelerators.delete(action);
     },
 
-    /**
-     * ScreenshotWindow:
-     * @include_frame: Whether to include the frame or not
-     * @include_cursor: Whether to include the cursor image or not
-     * @flash: Whether to flash the window area or not
-     * @filename: The filename for the screenshot
-     *
-     * Takes a screenshot of the focused window (optionally omitting the frame)
-     * and saves it in @filename as png image, it returns a boolean
-     * indicating whether the operation was successful or not.
-     *
-     */
-    ScreenshotWindowAsync : function (params, invocation) {
-        let [include_frame, include_cursor, flash, filename] = params;
-        let screenshot = new Shell.Screenshot();
-        screenshot.screenshot_window (include_frame, include_cursor, filename,
-                                  Lang.bind(this, this._onScreenshotComplete,
-                                            flash, invocation));
+    _onGrabberBusNameVanished: function(connection, name) {
+        let grabs = this._grabbedAccelerators.items();
+        for (let i = 0; i < grabs.length; i++) {
+            let [action, sender] = grabs[i];
+            if (sender == name)
+                this._ungrabAccelerator(action);
+        }
+        Gio.bus_unwatch_name(this._grabbers.get(name));
+        this._grabbers.delete(name);
     },
 
-    /**
-     * Screenshot:
-     * @filename: The filename for the screenshot
-     * @include_cursor: Whether to include the cursor image or not
-     * @flash: Whether to flash the screen or not
-     *
-     * Takes a screenshot of the whole screen and saves it
-     * in @filename as png image, it returns a boolean
-     * indicating whether the operation was successful or not.
-     *
-     */
-    ScreenshotAsync : function (params, invocation) {
-        let [include_cursor, flash, filename] = params;
-        let screenshot = new Shell.Screenshot();
-        screenshot.screenshot(include_cursor, filename,
-                          Lang.bind(this, this._onScreenshotComplete,
-                                    flash, invocation));
+
+    Mode: global.session_mode,
+
+    get OverviewActive() {
+        return Main.overview.visible;
     },
 
-    FlashArea: function(x, y, width, height) {
-        let flashspot = new Flashspot.Flashspot({ x : x, y : y, width: width, height: height});
-        flashspot.fire();
+    set OverviewActive(visible) {
+        if (visible)
+            Main.overview.show();
+        else
+            Main.overview.hide();
     },
+
+    ShellVersion: Config.PACKAGE_VERSION
+});
+
+const GnomeShellExtensionsIface = <interface name="org.gnome.Shell.Extensions">
+<method name="ListExtensions">
+    <arg type="a{sa{sv}}" direction="out" name="extensions" />
+</method>
+<method name="GetExtensionInfo">
+    <arg type="s" direction="in" name="extension" />
+    <arg type="a{sv}" direction="out" name="info" />
+</method>
+<method name="GetExtensionErrors">
+    <arg type="s" direction="in" name="extension" />
+    <arg type="as" direction="out" name="errors" />
+</method>
+<signal name="ExtensionStatusChanged">
+    <arg type="s" name="uuid"/>
+    <arg type="i" name="state"/>
+    <arg type="s" name="error"/>
+</signal>
+<method name="InstallRemoteExtension">
+    <arg type="s" direction="in" name="uuid"/>
+    <arg type="s" direction="out" name="result"/>
+</method>
+<method name="UninstallExtension">
+    <arg type="s" direction="in" name="uuid"/>
+    <arg type="b" direction="out" name="success"/>
+</method>
+<method name="LaunchExtensionPrefs">
+    <arg type="s" direction="in" name="uuid"/>
+</method>
+<method name="ReloadExtension">
+    <arg type="s" direction="in" name="uuid"/>
+</method>
+<method name="CheckForUpdates">
+</method>
+<property name="ShellVersion" type="s" access="read" />
+</interface>;
+
+const GnomeShellExtensions = new Lang.Class({
+    Name: 'GnomeShellExtensionsDBus',
+
+    _init: function() {
+        this._dbusImpl = Gio.DBusExportedObject.wrapJSObject(GnomeShellExtensionsIface, this);
+        this._dbusImpl.export(Gio.DBus.session, '/org/gnome/Shell');
+        ExtensionSystem.connect('extension-state-changed',
+                                Lang.bind(this, this._extensionStateChanged));
+    },
+
 
     ListExtensions: function() {
         let out = {};
@@ -260,26 +338,12 @@ const GnomeShell = new Lang.Class({
         return extension.errors;
     },
 
-    EnableExtension: function(uuid) {
-        let enabledExtensions = global.settings.get_strv(ExtensionSystem.ENABLED_EXTENSIONS_KEY);
-        if (enabledExtensions.indexOf(uuid) == -1)
-            enabledExtensions.push(uuid);
-        global.settings.set_strv(ExtensionSystem.ENABLED_EXTENSIONS_KEY, enabledExtensions);
-    },
-
-    DisableExtension: function(uuid) {
-        let enabledExtensions = global.settings.get_strv(ExtensionSystem.ENABLED_EXTENSIONS_KEY);
-        while (enabledExtensions.indexOf(uuid) != -1)
-            enabledExtensions.splice(enabledExtensions.indexOf(uuid), 1);
-        global.settings.set_strv(ExtensionSystem.ENABLED_EXTENSIONS_KEY, enabledExtensions);
-    },
-
-    InstallRemoteExtension: function(uuid, version_tag) {
-        ExtensionSystem.installExtensionFromUUID(uuid, version_tag);
+    InstallRemoteExtensionAsync: function([uuid], invocation) {
+        return ExtensionDownloader.installExtension(uuid, invocation);
     },
 
     UninstallExtension: function(uuid) {
-        return ExtensionSystem.uninstallExtensionFromUUID(uuid);
+        return ExtensionDownloader.uninstallExtension(uuid);
     },
 
     LaunchExtensionPrefs: function(uuid) {
@@ -289,18 +353,17 @@ const GnomeShell = new Lang.Class({
                    ['extension:///' + uuid], -1, null);
     },
 
-    get OverviewActive() {
-        return Main.overview.visible;
+    ReloadExtension: function(uuid) {
+        let extension = ExtensionUtils.extensions[uuid];
+        if (!extension)
+            return;
+
+        ExtensionSystem.reloadExtension(extension);
     },
 
-    set OverviewActive(visible) {
-        if (visible)
-            Main.overview.show();
-        else
-            Main.overview.hide();
+    CheckForUpdates: function() {
+        ExtensionDownloader.checkForUpdates();
     },
-
-    ApiVersion: ExtensionSystem.API_VERSION,
 
     ShellVersion: Config.PACKAGE_VERSION,
 
@@ -308,4 +371,51 @@ const GnomeShell = new Lang.Class({
         this._dbusImpl.emit_signal('ExtensionStatusChanged',
                                    GLib.Variant.new('(sis)', [newState.uuid, newState.state, newState.error]));
     }
+});
+
+const ScreenSaverDBus = new Lang.Class({
+    Name: 'ScreenSaverDBus',
+
+    _init: function(screenShield) {
+        this.parent();
+
+        this._screenShield = screenShield;
+        screenShield.connect('active-changed', Lang.bind(this, function(shield) {
+            this._dbusImpl.emit_signal('ActiveChanged', GLib.Variant.new('(b)', [shield.active]));
+        }));
+
+        this._dbusImpl = Gio.DBusExportedObject.wrapJSObject(ScreenSaverIface, this);
+        this._dbusImpl.export(Gio.DBus.session, '/org/gnome/ScreenSaver');
+
+        Gio.DBus.session.own_name('org.gnome.ScreenSaver', Gio.BusNameOwnerFlags.REPLACE, null, null);
+    },
+
+    LockAsync: function(parameters, invocation) {
+        let tmpId = this._screenShield.connect('lock-screen-shown', Lang.bind(this, function() {
+            this._screenShield.disconnect(tmpId);
+
+            invocation.return_value(null);
+        }));
+
+        this._screenShield.lock(true);
+    },
+
+    SetActive: function(active) {
+        if (active)
+            this._screenShield.activate(true);
+        else
+            this._screenShield.deactivate(false);
+    },
+
+    GetActive: function() {
+        return this._screenShield.active;
+    },
+
+    GetActiveTime: function() {
+        let started = this._screenShield.activationTime;
+        if (started > 0)
+            return Math.floor((GLib.get_monotonic_time() - started) / 1000000);
+        else
+            return 0;
+    },
 });

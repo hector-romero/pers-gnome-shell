@@ -39,10 +39,18 @@ function _patchContainerClass(containerClass) {
     };
 }
 
+function _makeLoggingFunc(func) {
+    return function() {
+        return func([].join.call(arguments, ', '));
+    };
+}
+
 function init() {
     // Add some bindings to the global JS namespace; (gjs keeps the web
     // browser convention of having that namespace be called 'window'.)
     window.global = Shell.Global.get();
+
+    window.log = _makeLoggingFunc(window.log);
 
     window._ = Gettext.gettext;
     window.C_ = Gettext.pgettext;
@@ -82,7 +90,7 @@ function init() {
     }
 
     // OK, now things are initialized enough that we can import shell JS
-    const Format = imports.misc.format;
+    const Format = imports.format;
     const Tweener = imports.ui.tweener;
 
     Tweener.init();

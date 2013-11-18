@@ -3,17 +3,16 @@
 const Clutter = imports.gi.Clutter;
 const Lang = imports.lang;
 const Mainloop = imports.mainloop;
+const Meta  = imports.gi.Meta;
 const Shell = imports.gi.Shell;
+const Signals = imports.signals;
 const St = imports.gi.St;
-const Main = imports.ui.main;
 
+const Main = imports.ui.main;
 const Tweener = imports.ui.tweener;
 
 const ANIMATION_TIME = 0.1;
 const DISPLAY_TIMEOUT = 600;
-
-const UP = -1;
-const DOWN = 1;
 
 const WorkspaceSwitcherPopup = new Lang.Class({
     Name: 'WorkspaceSwitcherPopup',
@@ -43,21 +42,22 @@ const WorkspaceSwitcherPopup = new Lang.Class({
 
         this.actor.add_actor(this._container);
 
-        this._redraw();
-
-        this._position();
+        this._redisplay();
 
         this.actor.hide();
+
+        this._globalSignals = [];
+        this._globalSignals.push(global.screen.connect('workspace-added', Lang.bind(this, this._redisplay)));
+        this._globalSignals.push(global.screen.connect('workspace-removed', Lang.bind(this, this._redisplay)));
 
         this._timeoutId = Mainloop.timeout_add(DISPLAY_TIMEOUT, Lang.bind(this, this._onTimeout));
     },
 
     _getPreferredHeight : function (actor, forWidth, alloc) {
         let children = this._list.get_children();
-        let primary = Main.layoutManager.primaryMonitor;
+        let workArea = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
 
-        let availHeight = primary.height;
-        availHeight -= Main.panel.actor.height;
+        let availHeight = workArea.height;
         availHeight -= this.actor.get_theme_node().get_vertical_padding();
         availHeight -= this._container.get_theme_node().get_vertical_padding();
         availHeight -= this._list.get_theme_node().get_vertical_padding();
@@ -66,7 +66,7 @@ const WorkspaceSwitcherPopup = new Lang.Class({
         for (let i = 0; i < children.length; i++) {
             let [childMinHeight, childNaturalHeight] = children[i].get_preferred_height(-1);
             let [childMinWidth, childNaturalWidth] = children[i].get_preferred_width(childNaturalHeight);
-            height += childNaturalHeight * primary.width / primary.height;
+            height += childNaturalHeight * workArea.width / workArea.height;
         }
 
         let spacing = this._itemSpacing * (global.screen.n_workspaces - 1);
@@ -80,8 +80,8 @@ const WorkspaceSwitcherPopup = new Lang.Class({
     },
 
     _getPreferredWidth : function (actor, forHeight, alloc) {
-        let primary = Main.layoutManager.primaryMonitor;
-        this._childWidth = Math.round(this._childHeight * primary.width / primary.height);
+        let workArea = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
+        this._childWidth = Math.round(this._childHeight * workArea.width / workArea.height);
 
         alloc.min_size = this._childWidth;
         alloc.natural_size = this._childWidth;
@@ -104,15 +104,15 @@ const WorkspaceSwitcherPopup = new Lang.Class({
         }
     },
 
-    _redraw : function(direction, activeWorkspaceIndex) {
+    _redisplay: function() {
         this._list.destroy_all_children();
 
         for (let i = 0; i < global.screen.n_workspaces; i++) {
             let indicator = null;
 
-           if (i == activeWorkspaceIndex && direction == UP)
+           if (i == this._activeWorkspaceIndex && this._direction == Meta.MotionDirection.UP)
                indicator = new St.Bin({ style_class: 'ws-switcher-active-up' });
-           else if(i == activeWorkspaceIndex && direction == DOWN)
+           else if(i == this._activeWorkspaceIndex && this._direction == Meta.MotionDirection.DOWN)
                indicator = new St.Bin({ style_class: 'ws-switcher-active-down' });
            else
                indicator = new St.Bin({ style_class: 'ws-switcher-box' });
@@ -120,13 +120,12 @@ const WorkspaceSwitcherPopup = new Lang.Class({
            this._list.add_actor(indicator);
 
         }
-    },
 
-    _position: function() {
-        let primary = Main.layoutManager.primaryMonitor;
-        this._container.x = primary.x + Math.floor((primary.width - this._container.width) / 2);
-        this._container.y = primary.y + Main.panel.actor.height +
-                            Math.floor(((primary.height - Main.panel.actor.height) - this._container.height) / 2);
+        let workArea = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
+        let [containerMinHeight, containerNatHeight] = this._container.get_preferred_height(global.screen_width);
+        let [containerMinWidth, containerNatWidth] = this._container.get_preferred_width(containerNatHeight);
+        this._container.x = workArea.x + Math.floor((workArea.width - containerNatWidth) / 2);
+        this._container.y = workArea.y + Math.floor((workArea.height - containerNatHeight) / 2);
     },
 
     _show : function() {
@@ -134,12 +133,14 @@ const WorkspaceSwitcherPopup = new Lang.Class({
                                             time: ANIMATION_TIME,
                                             transition: 'easeOutQuad'
                                            });
-        this._position();
         this.actor.show();
     },
 
     display : function(direction, activeWorkspaceIndex) {
-        this._redraw(direction, activeWorkspaceIndex);
+        this._direction = direction;
+        this._activeWorkspaceIndex = activeWorkspaceIndex;
+
+        this._redisplay();
         if (this._timeoutId != 0)
             Mainloop.source_remove(this._timeoutId);
         this._timeoutId = Mainloop.timeout_add(DISPLAY_TIMEOUT, Lang.bind(this, this._onTimeout));
@@ -152,8 +153,22 @@ const WorkspaceSwitcherPopup = new Lang.Class({
         Tweener.addTween(this._container, { opacity: 0.0,
                                             time: ANIMATION_TIME,
                                             transition: 'easeOutQuad',
-                                            onComplete: function() { this.actor.hide(); },
+                                            onComplete: function() { this.destroy(); },
                                             onCompleteScope: this
                                            });
+    },
+
+    destroy: function() {
+        if (this._timeoutId)
+            Mainloop.source_remove(this._timeoutId);
+        this._timeoutId = 0;
+
+        for (let i = 0; i < this._globalSignals.length; i++)
+            global.screen.disconnect(this._globalSignals[i]);
+
+        this.actor.destroy();
+
+        this.emit('destroy');
     }
 });
+Signals.addSignalMethods(WorkspaceSwitcherPopup.prototype);

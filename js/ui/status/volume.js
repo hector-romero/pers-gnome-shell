@@ -2,142 +2,214 @@
 
 const Clutter = imports.gi.Clutter;
 const Lang = imports.lang;
-const Mainloop = imports.mainloop;
-const Shell = imports.gi.Shell;
+const Gio = imports.gi.Gio;
 const Gvc = imports.gi.Gvc;
-const Signals = imports.signals;
 const St = imports.gi.St;
+const Signals = imports.signals;
 
-const Main = imports.ui.main;
 const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
-const Util = imports.misc.util;
 
 const VOLUME_ADJUSTMENT_STEP = 0.05; /* Volume adjustment step in % */
 
 const VOLUME_NOTIFY_ID = 1;
 
-const Indicator = new Lang.Class({
-    Name: 'VolumeIndicator',
-    Extends: PanelMenu.SystemStatusButton,
+// Each Gvc.MixerControl is a connection to PulseAudio,
+// so it's better to make it a singleton
+let _mixerControl;
+function getMixerControl() {
+    if (_mixerControl)
+        return _mixerControl;
 
-    _init: function() {
-        this.parent('audio-volume-muted', _("Volume"));
+    _mixerControl = new Gvc.MixerControl({ name: 'GNOME Shell Volume Control' });
+    _mixerControl.open();
 
-        this._control = new Gvc.MixerControl({ name: 'GNOME Shell Volume Control' });
-        this._control.connect('state-changed', Lang.bind(this, this._onControlStateChanged));
-        this._control.connect('default-sink-changed', Lang.bind(this, this._readOutput));
-        this._control.connect('default-source-changed', Lang.bind(this, this._readInput));
+    return _mixerControl;
+}
+
+const StreamSlider = new Lang.Class({
+    Name: 'StreamSlider',
+
+    _init: function(control, title) {
+        this._control = control;
+
+        this.item = new PopupMenu.PopupMenuSection();
+
+        this._title = new PopupMenu.PopupMenuItem(title, { reactive: false });
+        this._slider = new PopupMenu.PopupSliderMenuItem(0);
+        this._slider.connect('value-changed', Lang.bind(this, this._sliderChanged));
+        this._slider.connect('drag-end', Lang.bind(this, this._notifyVolumeChange));
+
+        this.item.addMenuItem(this._title);
+        this.item.addMenuItem(this._slider);
+
+        this._stream = null;
+        this._shouldShow = true;
+    },
+
+    get stream() {
+        return this._stream;
+    },
+
+    set stream(stream) {
+        if (this._stream) {
+            this._disconnectStream(this._stream);
+        }
+
+        this._stream = stream;
+
+        if (this._stream) {
+            this._connectStream(this._stream);
+            this._updateVolume();
+        } else {
+            this.emit('stream-updated');
+        }
+
+        this._updateVisibility();
+    },
+
+    _disconnectStream: function(stream) {
+        stream.disconnect(this._mutedChangedId);
+        this._mutedChangedId = 0;
+        stream.disconnect(this._volumeChangedId);
+        this._volumeChangedId = 0;
+    },
+
+    _connectStream: function(stream) {
+        this._mutedChangedId = stream.connect('notify::is-muted', Lang.bind(this, this._updateVolume));
+        this._volumeChangedId = stream.connect('notify::volume', Lang.bind(this, this._updateVolume));
+    },
+
+    _shouldBeVisible: function() {
+        return this._stream != null;
+    },
+
+    _updateVisibility: function() {
+        let visible = this._shouldBeVisible();
+        this._title.actor.visible = visible;
+        this._slider.actor.visible = visible;
+    },
+
+    scroll: function(event) {
+        this._slider.scroll(event);
+    },
+
+    setValue: function(value) {
+        // piggy-back off of sliderChanged
+        this._slider.setValue(value);
+    },
+
+    _sliderChanged: function(slider, value, property) {
+        if (!this._stream)
+            return;
+
+        let volume = value * this._control.get_vol_max_norm();
+        let prevMuted = this._stream.is_muted;
+        if (volume < 1) {
+            this._stream.volume = 0;
+            if (!prevMuted)
+                this._stream.change_is_muted(true);
+        } else {
+            this._stream.volume = volume;
+            if (prevMuted)
+                this._stream.change_is_muted(false);
+        }
+        this._stream.push_volume();
+    },
+
+    _notifyVolumeChange: function() {
+        global.cancel_theme_sound(VOLUME_NOTIFY_ID);
+        global.play_theme_sound(VOLUME_NOTIFY_ID,
+                                'audio-volume-change',
+                                _("Volume changed"),
+                                Clutter.get_current_event ());
+    },
+
+    _updateVolume: function() {
+        let muted = this._stream.is_muted;
+        this._slider.setValue(muted ? 0 : (this._stream.volume / this._control.get_vol_max_norm()));
+        this.emit('stream-updated');
+    },
+
+    getIcon: function() {
+        if (!this._stream)
+            return null;
+
+        let volume = this._stream.volume;
+        if (this._stream.is_muted || volume <= 0) {
+            return 'audio-volume-muted-symbolic';
+        } else {
+            let n = Math.floor(3 * volume / this._control.get_vol_max_norm()) + 1;
+            if (n < 2)
+                return 'audio-volume-low-symbolic';
+            if (n >= 3)
+                return 'audio-volume-high-symbolic';
+            return 'audio-volume-medium-symbolic';
+        }
+    }
+});
+Signals.addSignalMethods(StreamSlider.prototype);
+
+const OutputStreamSlider = new Lang.Class({
+    Name: 'OutputStreamSlider',
+    Extends: StreamSlider,
+
+    _connectStream: function(stream) {
+        this.parent(stream);
+        this._portChangedId = stream.connect('notify::port', Lang.bind(this, this._portChanged));
+        this._portChanged();
+    },
+
+    _findHeadphones: function(sink) {
+        // This only works for external headphones (e.g. bluetooth)
+        if (sink.get_form_factor() == 'headset' ||
+            sink.get_form_factor() == 'headphone')
+            return true;
+
+        // a bit hackish, but ALSA/PulseAudio have a number
+        // of different identifiers for headphones, and I could
+        // not find the complete list
+        if (sink.get_ports().length > 0)
+            return sink.get_port().port.indexOf('headphone') >= 0;
+
+        return false;
+    },
+
+    _disconnectStream: function(stream) {
+        this.parent(stream);
+        stream.disconnect(this._portChangedId);
+        this._portChangedId = 0;
+    },
+
+    _portChanged: function() {
+        let hasHeadphones = this._findHeadphones(this._stream);
+        if (hasHeadphones != this._hasHeadphones) {
+            this._hasHeadphones = hasHeadphones;
+            this.emit('headphones-changed', this._hasHeadphones);
+        }
+    }
+});
+
+const InputStreamSlider = new Lang.Class({
+    Name: 'InputStreamSlider',
+    Extends: StreamSlider,
+
+    _init: function(control, title) {
+        this.parent(control, title);
         this._control.connect('stream-added', Lang.bind(this, this._maybeShowInput));
         this._control.connect('stream-removed', Lang.bind(this, this._maybeShowInput));
-        this._volumeMax = this._control.get_vol_max_norm();
-
-        this._output = null;
-        this._outputVolumeId = 0;
-        this._outputMutedId = 0;
-        /* Translators: This is the label for audio volume */
-        this._outputTitle = new PopupMenu.PopupMenuItem(_("Volume"), { reactive: false });
-        this._outputSlider = new PopupMenu.PopupSliderMenuItem(0);
-        this._outputSlider.connect('value-changed', Lang.bind(this, this._sliderChanged, '_output'));
-        this._outputSlider.connect('drag-end', Lang.bind(this, this._notifyVolumeChange));
-        this.menu.addMenuItem(this._outputTitle);
-        this.menu.addMenuItem(this._outputSlider);
-
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-        this._input = null;
-        this._inputVolumeId = 0;
-        this._inputMutedId = 0;
-        this._inputTitle = new PopupMenu.PopupMenuItem(_("Microphone"), { reactive: false });
-        this._inputSlider = new PopupMenu.PopupSliderMenuItem(0);
-        this._inputSlider.connect('value-changed', Lang.bind(this, this._sliderChanged, '_input'));
-        this._inputSlider.connect('drag-end', Lang.bind(this, this._notifyVolumeChange));
-        this.menu.addMenuItem(this._inputTitle);
-        this.menu.addMenuItem(this._inputSlider);
-
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this.menu.addSettingsAction(_("Sound Settings"), 'gnome-sound-panel.desktop');
-
-        this.actor.connect('scroll-event', Lang.bind(this, this._onScrollEvent));
-        this._control.open();
     },
 
-    _onScrollEvent: function(actor, event) {
-        let direction = event.get_scroll_direction();
-        let currentVolume = this._output.volume;
-
-        if (direction == Clutter.ScrollDirection.DOWN) {
-            let prev_muted = this._output.is_muted;
-            this._output.volume = Math.max(0, currentVolume - this._volumeMax * VOLUME_ADJUSTMENT_STEP);
-            if (this._output.volume < 1) {
-                this._output.volume = 0;
-                if (!prev_muted)
-                    this._output.change_is_muted(true);
-            }
-            this._output.push_volume();
-        }
-        else if (direction == Clutter.ScrollDirection.UP) {
-            this._output.volume = Math.min(this._volumeMax, currentVolume + this._volumeMax * VOLUME_ADJUSTMENT_STEP);
-            this._output.change_is_muted(false);
-            this._output.push_volume();
-        }
-
-        this._notifyVolumeChange();
-    },
-
-    _onControlStateChanged: function() {
-        if (this._control.get_state() == Gvc.MixerControlState.READY) {
-            this._readOutput();
-            this._readInput();
-            this.actor.show();
-        } else {
-            this.actor.hide();
-        }
-    },
-
-    _readOutput: function() {
-        if (this._outputVolumeId) {
-            this._output.disconnect(this._outputVolumeId);
-            this._output.disconnect(this._outputMutedId);
-            this._outputVolumeId = 0;
-            this._outputMutedId = 0;
-        }
-        this._output = this._control.get_default_sink();
-        if (this._output) {
-            this._outputMutedId = this._output.connect('notify::is-muted', Lang.bind(this, this._mutedChanged, '_output'));
-            this._outputVolumeId = this._output.connect('notify::volume', Lang.bind(this, this._volumeChanged, '_output'));
-            this._mutedChanged (null, null, '_output');
-            this._volumeChanged (null, null, '_output');
-        } else {
-            this._outputSlider.setValue(0);
-            this.setIcon('audio-volume-muted-symbolic');
-        }
-    },
-
-    _readInput: function() {
-        if (this._inputVolumeId) {
-            this._input.disconnect(this._inputVolumeId);
-            this._input.disconnect(this._inputMutedId);
-            this._inputVolumeId = 0;
-            this._inputMutedId = 0;
-        }
-        this._input = this._control.get_default_source();
-        if (this._input) {
-            this._inputMutedId = this._input.connect('notify::is-muted', Lang.bind(this, this._mutedChanged, '_input'));
-            this._inputVolumeId = this._input.connect('notify::volume', Lang.bind(this, this._volumeChanged, '_input'));
-            this._mutedChanged (null, null, '_input');
-            this._volumeChanged (null, null, '_input');
-        } else {
-            this._inputTitle.actor.hide();
-            this._inputSlider.actor.hide();
-        }
+    _connectStream: function(stream) {
+        this.parent(stream);
+        this._maybeShowInput();
     },
 
     _maybeShowInput: function() {
         // only show input widgets if any application is recording audio
         let showInput = false;
         let recordingApps = this._control.get_source_outputs();
-        if (this._input && recordingApps) {
+        if (this._stream && recordingApps) {
             for (let i = 0; i < recordingApps.length; i++) {
                 let outputStream = recordingApps[i];
                 let id = outputStream.get_application_id();
@@ -149,67 +221,104 @@ const Indicator = new Lang.Class({
                 }
             }
         }
-        if (showInput) {
-            this._inputTitle.actor.show();
-            this._inputSlider.actor.show();
+
+        this._showInput = showInput;
+        this._updateVisibility();
+    },
+
+    _shouldBeVisible: function() {
+        return this.parent() && this._showInput;
+    }
+});
+
+const VolumeMenu = new Lang.Class({
+    Name: 'VolumeMenu',
+    Extends: PopupMenu.PopupMenuSection,
+
+    _init: function(control) {
+        this.parent();
+
+        this.hasHeadphones = false;
+
+        this._control = control;
+        this._control.connect('state-changed', Lang.bind(this, this._onControlStateChanged));
+        this._control.connect('default-sink-changed', Lang.bind(this, this._readOutput));
+        this._control.connect('default-source-changed', Lang.bind(this, this._readInput));
+
+        /* Translators: This is the label for audio volume */
+        this._output = new OutputStreamSlider(this._control, _("Volume"));
+        this._output.connect('stream-updated', Lang.bind(this, function() {
+            this.emit('icon-changed');
+        }));
+        this._output.connect('headphones-changed', Lang.bind(this, function(stream, value) {
+            this.emit('headphones-changed', value);
+        }));
+        this.addMenuItem(this._output.item);
+
+        this._input = new InputStreamSlider(this._control, _("Microphone"));
+        this.addMenuItem(this._input.item);
+
+        this.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        this._onControlStateChanged();
+    },
+
+    scroll: function(event) {
+        this._output.scroll(event);
+    },
+
+    _onControlStateChanged: function() {
+        if (this._control.get_state() == Gvc.MixerControlState.READY) {
+            this._readInput();
+            this._readOutput();
         } else {
-            this._inputTitle.actor.hide();
-            this._inputSlider.actor.hide();
+            this.emit('icon-changed');
         }
     },
 
-    _volumeToIcon: function(volume) {
-        if (volume <= 0) {
-            return 'audio-volume-muted';
-        } else {
-            let n = Math.floor(3 * volume / this._volumeMax) + 1;
-            if (n < 2)
-                return 'audio-volume-low';
-            if (n >= 3)
-                return 'audio-volume-high';
-            return 'audio-volume-medium';
-        }
+    _readOutput: function() {
+        this._output.stream = this._control.get_default_sink();
     },
 
-    _sliderChanged: function(slider, value, property) {
-        if (this[property] == null) {
-            log ('Volume slider changed for %s, but %s does not exist'.format(property, property));
-            return;
-        }
-        let volume = value * this._volumeMax;
-        let prev_muted = this[property].is_muted;
-        if (volume < 1) {
-            this[property].volume = 0;
-            if (!prev_muted)
-                this[property].change_is_muted(true);
-        } else {
-            this[property].volume = volume;
-            if (prev_muted)
-                this[property].change_is_muted(false);
-        }
-        this[property].push_volume();
+    _readInput: function() {
+        this._input.stream = this._control.get_default_source();
     },
 
-    _notifyVolumeChange: function() {
-        global.cancel_theme_sound(VOLUME_NOTIFY_ID);
-        global.play_theme_sound(VOLUME_NOTIFY_ID, 'audio-volume-change');
+    getIcon: function() {
+        return this._output.getIcon();
+    }
+});
+
+const Indicator = new Lang.Class({
+    Name: 'VolumeIndicator',
+    Extends: PanelMenu.SystemStatusButton,
+
+    _init: function() {
+        this.parent('audio-volume-muted-symbolic', _("Volume"));
+
+        this._control = getMixerControl();
+        this._volumeMenu = new VolumeMenu(this._control);
+        this._volumeMenu.connect('icon-changed', Lang.bind(this, function(menu) {
+            let icon = this._volumeMenu.getIcon();
+            this.actor.visible = (icon != null);
+            this.setIcon(icon);
+        }));
+        this._volumeMenu.connect('headphones-changed', Lang.bind(this, function(menu, value) {
+            this._headphoneIcon.visible = value;
+        }));
+
+        this._headphoneIcon = this.addIcon(new Gio.ThemedIcon({ name: 'audio-headphones-symbolic' }));
+        this._headphoneIcon.visible = false;
+
+        this.menu.addMenuItem(this._volumeMenu);
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this.menu.addSettingsAction(_("Sound Settings"), 'gnome-sound-panel.desktop');
+
+        this.actor.connect('scroll-event', Lang.bind(this, this._onScrollEvent));
     },
 
-    _mutedChanged: function(object, param_spec, property) {
-        let muted = this[property].is_muted;
-        let slider = this[property+'Slider'];
-        slider.setValue(muted ? 0 : (this[property].volume / this._volumeMax));
-        if (property == '_output') {
-            if (muted)
-                this.setIcon('audio-volume-muted');
-            else
-                this.setIcon(this._volumeToIcon(this._output.volume));
-        }
-    },
-
-    _volumeChanged: function(object, param_spec, property) {
-        this[property+'Slider'].setValue(this[property].volume / this._volumeMax);
-        if (property == '_output' && !this._output.is_muted)
-            this.setIcon(this._volumeToIcon(this._output.volume));
+    _onScrollEvent: function(actor, event) {
+        this._volumeMenu.scroll(event);
     }
 });

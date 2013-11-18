@@ -3,15 +3,11 @@
 /* The name of this package (not localized) */
 const PACKAGE_NAME = 'gnome-shell';
 /* The version of this package */
-const PACKAGE_VERSION = '3.4.2';
-/* The version of GJS we're linking to */
-const GJS_VERSION = '1.36.1';
+const PACKAGE_VERSION = '3.8.4';
 /* 1 if gnome-bluetooth is available, 0 otherwise */
 const HAVE_BLUETOOTH = 1;
 /* 1 if networkmanager is available, 0 otherwise */
 const HAVE_NETWORKMANAGER = 1;
-/* The system TLS CA list */
-const SHELL_SYSTEM_CA_FILE = '/etc/ssl/certs/ca-certificates.crt';
 /* gettext package */
 const GETTEXT_PACKAGE = 'gnome-shell';
 /* locale dir */

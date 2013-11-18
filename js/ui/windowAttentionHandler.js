@@ -39,6 +39,8 @@ const WindowAttentionHandler = new Lang.Class({
         let [title, banner] = this._getTitleAndBanner(app, window);
 
         let notification = new MessageTray.Notification(source, title, banner);
+        notification.setForFeedback(true);
+
         source.notify(notification);
 
         source.signalIDs.push(window.connect('notify::title', Lang.bind(this, function() {
@@ -53,10 +55,10 @@ const Source = new Lang.Class({
     Extends: MessageTray.Source,
 
     _init: function(app, window) {
-        this.parent(app.get_name());
         this._window = window;
         this._app = app;
-        this._setSummaryIcon(this.createNotificationIcon());
+
+        this.parent(app.get_name());
 
         this.signalIDs = [];
         this.signalIDs.push(this._window.connect('notify::demands-attention', Lang.bind(this, function() { this.destroy(); })));
@@ -73,8 +75,8 @@ const Source = new Lang.Class({
         this.signalIDs = [];
     },
 
-    createNotificationIcon : function() {
-        return this._app.create_icon_texture(this.ICON_SIZE);
+    createIcon : function(size) {
+        return this._app.create_icon_texture(size);
     },
 
     open : function(notification) {
