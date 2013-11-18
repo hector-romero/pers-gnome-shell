@@ -16,11 +16,6 @@
       <summary>Show/Hide the percentage</summary>
       <description>Show or hide the percentage near the time. Set true or false.</description>
     </key>
-    <key type="b" name="showtime">
-      <default>true</default>
-      <summary>Show/Hide the time</summary>
-      <description>Show or hide the time near the icon. Set true or false.</description>
-    </key>
     <key type="b" name="showoncharge">
       <default>true</default>
       <summary>Show/Hide when charging</summary>
@@ -30,6 +25,16 @@
       <default>true</default>
       <summary>Show/Hide when full</summary>
       <description>Show or hide at all when full. Set true or false.</description>
+    </key>
+    <key type="b" name="showbrackets">
+      <default>true</default>
+      <summary>Show/Hide brackets around the remaining time.</summary>
+      <description>Show or hide brackets around the remaining time. Set true or false.</description>
+    </key>
+    <key type="b" name="showtime">
+      <default>true</default>
+      <summary>Show/Hide the time.</summary>
+      <description>Show or hide charging/discharging time. Set true or false.</description>
     </key>
     <key type="b" name="debug">
       <default>false</default>

@@ -61,6 +61,8 @@ function init() {
   let schema = 'org.gnome.shell.extensions.battery-remaining-time';
   settings = Convenience.getSettings(schema);
 
+  Convenience.initTranslations("battery-remaining-time");
+
   boolSettings = {
     showarrowoncharge: {
       label: _("Show the arrow."),
@@ -69,10 +71,6 @@ function init() {
     showpercentage: {
       label: _("Show the percentage."),
       help: _("Show or hide the percentage near the time. (default: ON)")
-    },
-    showtime: {
-      label: _("Show the time."),
-      help: _("Show or hide the time near the icon. (default: ON)")
     },
     showoncharge: {
       label: _("Show when charging."),
@@ -85,6 +83,14 @@ function init() {
     showicon: {
       label: _("Show the icon. Needs reload."),
       help: _("Show or hide the icon near the text. (default: ON)")
+    },
+    showtime: {
+      label: _("Show the remaining time. Needs reload."),
+      help: _("Show or hide the remaining time. (default: ON)")
+    },
+    showbrackets: {
+      label: _("Show the brackets around the remaining time. Needs reload."),
+      help: _("Show or hide the brackets around the remaining time. (default: ON)")
     },
     debug: {
       label: _("Debug mode. Needs reload."),

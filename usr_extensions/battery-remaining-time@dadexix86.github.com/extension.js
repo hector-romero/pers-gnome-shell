@@ -1,7 +1,16 @@
 /*
  * Gnome Shell Extension: battery-remaining-time
  *
- * Copyright © 2012 Davide Alberelli <dadexix86@gmail.com>
+ * Modified to show/hide brackets around remaining time.
+ * Relevant settings can be found at extension preferences.
+ * 2013 by Ismail Demirbilek <mail@ismail.demirbilek.com>
+ *
+ *
+ * Copyright © 2012 by
+ *         Christian Schubert <schubi@erlangen.ccc.de>
+ * 
+ * primary written and transfered to me by
+ *         Davide Alberelli <dadexix86@gmail.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,19 +39,21 @@ const Main = imports.ui.main;
 const Myself = imports.misc.extensionUtils.getCurrentExtension();
 const Convenience = Myself.imports.convenience;
 
-function init() {
-}
-
 const SETTING_SHOW_ICON='showicon';
 const SETTING_SHOW_ARROW_ON_CHARGE='showarrowoncharge';
 const SETTING_SHOW_PERCENTAGE='showpercentage';
 const SETTING_SHOW_TIME='showtime';
 const SETTING_SHOW_ON_CHARGE='showoncharge';
 const SETTING_SHOW_ON_FULL='showonfull';
+const SETTING_SHOW_BRACKETS='showbrackets';
 const SETTING_DEBUG='debug';
 
 let settings = Convenience.getSettings('org.gnome.shell.extensions.battery-remaining-time');
 let debug = Convenience.getSettings().get_boolean(SETTING_DEBUG);
+
+function init() {
+  Convenience.initTranslations("battery-remaining-time");
+}
 
 function monkeypatch(batteryArea) {
 
@@ -50,7 +61,7 @@ function monkeypatch(batteryArea) {
     // icon with the combo icon/label(s); this is dynamically called the first time
     // a battery is found in the _updateLabel() method
     
-    let showIcon, showArrowOnCharge, showPercentage, showOnCharge, showTime, showOnFull;
+    let showIcon, showArrowOnCharge, showPercentage, showOnCharge, showTime, showOnFull, showBrackets;
     
     batteryArea._setParameters = function setParameters(){
         if (debug){
@@ -62,6 +73,7 @@ function monkeypatch(batteryArea) {
         showTime = Convenience.getSettings().get_boolean(SETTING_SHOW_TIME);
         showOnCharge = Convenience.getSettings().get_boolean(SETTING_SHOW_ON_CHARGE);
         showOnFull = Convenience.getSettings().get_boolean(SETTING_SHOW_ON_FULL);
+        showBrackets = Convenience.getSettings().get_boolean(SETTING_SHOW_BRACKETS);
     }
     
     batteryArea._replaceIconWithBox = function replaceIconWithBox() {
@@ -185,7 +197,7 @@ function monkeypatch(batteryArea) {
             let arrow;
 
             if (showArrowOnCharge)
-                arrow = decodeURIComponent(escape('↑ ')).toString();
+                arrow = "\u2191 ";
             else
                 arrow = ' ';
 
@@ -196,8 +208,18 @@ function monkeypatch(batteryArea) {
                     this.displayString = arrow;
                     if (showPercentage)
                         this.displayString = this.displayString + totalMatch[1].toString() + '%';
-                    if (showTime)
-                        this.displayString = this.displayString + ' (' + this.timeString + ')';
+                     if (showTime){
+                        	if(showBrackets)
+                            		this.displayString = this.displayString + ' (';
+                            	else
+                            		this.displayString = this.displayString + ' ';
+                            	this.displayString = this.displayString + this.timeString + '';
+                            	if(showBrackets)
+                            		this.displayString = this.displayString + ') ';
+                            	else
+                            		this.displayString = this.displayString + ' ';
+                            
+                        }
                     showBattery();
                 }
             } else {
@@ -205,20 +227,40 @@ function monkeypatch(batteryArea) {
                     if (!showOnFull)
                         hideBattery();
                     else {
-                        this.timeString = decodeURIComponent(escape('∞'));
+                        this.timeString = "\u221E";
                         this.displayString = ' ';
                         if (showPercentage)
                             this.displayString = this.displayString + '100%';
-                        if (showTime)
-                            this.displayString = this.displayString + ' (' + this.timeString + ')';
+                        if (showTime){
+                        	if(showBrackets)
+                            		this.displayString = this.displayString + ' (';
+                            	else
+                            		this.displayString = this.displayString + ' ';
+                            	this.displayString = this.displayString + this.timeString + '';
+                            	if(showBrackets)
+                            		this.displayString = this.displayString + ') ';
+                            	else
+                            		this.displayString = this.displayString + ' ';
+                            
+                        }
                         showBattery();
                     }
                 } else {
                     this.displayString = ' ';
                     if (showPercentage)
                         this.displayString = this.displayString + totalMatch[1].toString() + '%';
-                    if (showTime)
-                        this.displayString = this.displayString + ' (' + this.timeString + ')';
+                     if (showTime){
+                        	if(showBrackets)
+                            		this.displayString = this.displayString + ' (';
+                            	else
+                            		this.displayString = this.displayString + ' ';
+                            	this.displayString = this.displayString + this.timeString + '';
+                            	if(showBrackets)
+                            		this.displayString = this.displayString + ') ';
+                            	else
+                            		this.displayString = this.displayString + ' ';
+                            
+                        }
                 }
             }
             
@@ -237,9 +279,9 @@ function monkeypatch(batteryArea) {
 
 function hideBattery() {
     for (var i = 0; i < Main.panel._rightBox.get_children().length; i++) {
-        if (Main.panel._statusArea['battery'] == 
+        if (Main.panel.statusArea['battery'] == 
             Main.panel._rightBox.get_children()[i]._delegate ||
-            Main.panel._statusArea['batteryBox'] == 
+            Main.panel.statusArea['batteryBox'] == 
             Main.panel._rightBox.get_children()[i]._delegate) {
             if (debug){
                 global.log("Battery Remaing Time: hiding battery.");
@@ -252,9 +294,9 @@ function hideBattery() {
 
 function showBattery() {
     for (var i = 0; i < Main.panel._rightBox.get_children().length; i++) {
-        if (Main.panel._statusArea['battery'] == 
+        if (Main.panel.statusArea['battery'] == 
             Main.panel._rightBox.get_children()[i]._delegate ||
-            Main.panel._statusArea['batteryBox'] == 
+            Main.panel.statusArea['batteryBox'] == 
             Main.panel._rightBox.get_children()[i]._delegate) {
             if (debug){
                 global.log("Battery Remaing Time: showing battery.");
@@ -267,7 +309,7 @@ function showBattery() {
 
 function enable() {
     // monkey-patch the existing battery icon, called "batteryArea" henceforth
-    let batteryArea = Main.panel._statusArea['battery'];
+    let batteryArea = Main.panel.statusArea['battery'];
     if (!batteryArea){
         if (debug){
             global.log("No battery Area!");
@@ -284,7 +326,7 @@ function enable() {
 }
 
 function disable() {
-    let batteryArea = Main.panel._statusArea['battery'];
+    let batteryArea = Main.panel.statusArea['battery'];
     if (!batteryArea){
         return;
     }
