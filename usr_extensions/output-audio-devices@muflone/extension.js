@@ -199,8 +199,8 @@ function main() {
 }
 
 function enable() {
-    if (Main.panel._statusArea['volume'] && !outputDevices)
-        outputDevices = new OutputDevices(Main.panel._statusArea['volume']);
+    if (Main.panel.statusArea['volume'] && !outputDevices)
+        outputDevices = new OutputDevices(Main.panel.statusArea['volume']);
 }
 
 function disable() {
