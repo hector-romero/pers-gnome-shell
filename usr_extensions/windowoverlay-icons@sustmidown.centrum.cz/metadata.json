@@ -5,13 +5,10 @@
   "name": "WindowOverlay Icons", 
   "settings-schema": "org.gnome.shell.extensions.windowoverlay-icons", 
   "shell-version": [
-    "3.4", 
-    "3.3.5", 
-    "3.6", 
     "3.8", 
-    "3.7.3"
+    "3.10"
   ], 
   "url": "https://github.com/sustmi/gnome-shell-extensions-sustmi/tree/master/windowoverlay-icons", 
   "uuid": "windowoverlay-icons@sustmidown.centrum.cz", 
-  "version": 9
+  "version": 11
 }
