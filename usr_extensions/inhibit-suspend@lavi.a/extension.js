@@ -19,7 +19,7 @@
  *	Git: https://github.com/lavi741/gnome-shell-extension-inhibit-suspend
  *	Launchpad: https://launchpad.net/inhibit-suspend
  */
-const DBus = imports.dbus;
+const Gio = imports.gi.Gio;
 const Lang = imports.lang;
 const St = imports.gi.St;
 
@@ -32,27 +32,32 @@ const UserMenu = imports.ui.userMenu;
 const Gettext = imports.gettext.domain('gnome-shell-extension-inhibit-suspend');
 const _ = Gettext.gettext;
 
-const SessionIface = {
-    name: "org.gnome.SessionManager",
-    methods: [ 
-    { name: "Inhibit", inSignature: "susu", outSignature: "u" },
-    { name: "Uninhibit", inSignature: "u", outSignature: "" }
-    ]
-};
+const SessionIface = <interface name='org.gnome.SessionManager'>
+<method name='Inhibit'>
+  <arg name='app_id' type='s' direction='in'/>
+  <arg name='toplevel_xid' type='u' direction='in'/>
+  <arg name='reason' type='s' direction='in'/>
+  <arg name='flags' type='u' direction='in'/>
+  <arg name='inhibit_cookie' type='u' direction='out'/>
+</method>
+<method name='Uninhibit'>
+  <arg name='inhibit_cookie' type='u' direction='in'/>
+</method>
+</interface>;
 
-let SessionProxy = DBus.makeProxyClass(SessionIface);
+let SessionProxy = Gio.DBusProxy.makeProxyWrapper(SessionIface);
 let item, userMenu;
 let inhibit, sessionProxy;
 
 function init(extensionMeta) {
     imports.gettext.bindtextdomain("gnome-shell-extension-inhibit-suspend", extensionMeta.path + "/locale");
-    userMenu = Main.panel._statusArea.userMenu;
+    userMenu = Main.panel.statusArea['userMenu'];
 }
 
 function enable() {
     item = new PopupMenu.PopupSwitchMenuItem(_("Inhibit Suspend"), false);
 	// Look for the notifications switch instead of coding by number to prevent conflicts.
-    let statusMenu = Main.panel._statusArea.userMenu;
+    let statusMenu = Main.panel.statusArea['userMenu'];
     let children = statusMenu.menu._getMenuItems();
     let index;
 	for (let i = 0; i < children.length; i++) {
@@ -64,7 +69,7 @@ function enable() {
     userMenu.menu.addMenuItem(item, index);
 
     inhibit = undefined;
-    sessionProxy = new SessionProxy(DBus.session, 'org.gnome.SessionManager', '/org/gnome/SessionManager');
+    sessionProxy = new SessionProxy(Gio.DBus.session, 'org.gnome.SessionManager', '/org/gnome/SessionManager');
     
     let onInhibit = function(cookie) {
         inhibit = cookie;
