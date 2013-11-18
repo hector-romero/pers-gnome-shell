@@ -1,5 +1,5 @@
 /*
-    Desktop Icons Switch (Version 1), an extension for the gnome-shell.
+    Desktop Icons Switch (Version 3), an extension for the gnome-shell.
     (C) 2012 Kurt Fleisch; <http://www.bananenfisch.net/gnome/>
     Gnome Shell Extensions: <https://extensions.gnome.org/>
 
@@ -18,7 +18,7 @@ let item, userMenu, iconSetting, iconStatus;
 
 function init()
 {
-    userMenu = Main.panel._statusArea.userMenu;
+    userMenu = Main.panel.statusArea.userMenu;
 }
 
 function enable()
